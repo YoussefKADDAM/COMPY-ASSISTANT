@@ -72,10 +72,16 @@ Every edit is detected and classified into three types (the KPI buckets):
 - **Deleted** (red) — text in V1 that is no longer in V2
 - **Changed** (orange) — text reworded between versions
 
+Classification is **token-level**: inserting words into an otherwise-unchanged
+sentence is **Added** (not Changed); removing words is **Deleted**; a genuine
+substitution (e.g. `AN2606` → `AN2004`) is **Changed**.
+
 Changes are reported **per edit**, not per section, so several edits inside the
 same paragraph are listed separately. Each row carries the **section number** and
-the **page** it occurs on. The HTML report shows a colored table plus KPI counts;
-`kpi_summary.json` holds the totals.
+the **page** it occurs on. In both the desktop table (dark theme) and the HTML
+report, **only the changed words are coloured** — red on the V1 side, green on the
+V2 side — with the surrounding context left neutral. `kpi_summary.json` holds the
+totals.
 
 ## Output artifacts (per run)
 

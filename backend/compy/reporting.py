@@ -51,6 +51,21 @@ class ReportBuilder:
         counts["total"] = sum(counts[k] for k in ("added", "deleted", "changed"))
         return counts
 
+    @staticmethod
+    def _snippet_html(prefix: str, change: str, suffix: str, full: str, colour: str) -> str:
+        # Context stays default colour; only the changed words are coloured.
+        if not (prefix or change or suffix):
+            return f'<span style="color:{colour}">{html.escape(full)}</span>' if full else ""
+        out = html.escape(prefix)
+        if change:
+            if out:
+                out += " "
+            out += f'<span style="color:{colour};font-weight:600">{html.escape(change)}</span>'
+        if suffix:
+            sep = "" if suffix[:1] in ".,;:!?)]}%" else " "
+            out += sep + html.escape(suffix)
+        return out
+
     @classmethod
     def _html_report(cls, diff_items: list[DiffItem], kpis: dict) -> str:
         rows = []
@@ -58,14 +73,16 @@ class ReportBuilder:
             label, colour, bg = CHANGE_STYLE.get(item.change_type, (item.change_type, "#1f2933", "#ffffff"))
             section = html.escape((item.section_number + " " + item.section_title).strip() or "Document")
             page = html.escape(item.page_v2 or item.page_v1 or "")
+            old_html = cls._snippet_html(item.old_prefix, item.old_change, item.old_suffix, item.old_snippet, "#b42318")
+            new_html = cls._snippet_html(item.new_prefix, item.new_change, item.new_suffix, item.new_snippet, "#1a7f37")
             rows.append(
                 f'<tr style="background:{bg}">'
                 f'<td><span style="color:{colour};font-weight:600">{label}</span></td>'
                 f"<td>{html.escape(item.section_number) or '&mdash;'}</td>"
                 f"<td>{section}</td>"
                 f"<td>Page {page}</td>"
-                f'<td style="color:#b42318">{html.escape(item.old_snippet)}</td>'
-                f'<td style="color:#1a7f37">{html.escape(item.new_snippet)}</td>'
+                f"<td>{old_html}</td>"
+                f"<td>{new_html}</td>"
                 "</tr>"
             )
         kpi_cards = "".join(

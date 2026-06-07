@@ -12,15 +12,24 @@ separately. Every change is classified as:
 
 from __future__ import annotations
 
+import re
 from difflib import SequenceMatcher
 
 from .models import DiffItem, Document, Section, SectionMatch
 from .text_utils import canonical_key, first_words
 
-CONTEXT_WORDS = 5  # words of surrounding context shown around each change
-# Above this many words, diff line-by-line first (cheap) and only word-diff the
-# changed lines. Keeps very long sections from a costly whole-section word diff.
+CONTEXT_WORDS = 6  # tokens of surrounding context shown around each change
+# Above this many tokens, diff line-by-line first (cheap) and only word-diff the
+# changed lines. Keeps very long sections from a costly whole-section token diff.
 TWO_LEVEL_WORD_LIMIT = 8000
+
+# A token is a word (letters/digits, keeping internal -, /, . so "STM32H7/H5" and
+# "1.8" stay whole) OR a single punctuation mark. Splitting trailing punctuation
+# off words is what lets an insertion like "NACK . " -> "NACK and NASE . " be seen
+# as a clean insert (classified Added) instead of a replace (Changed).
+TOKEN_RE = re.compile(r"[^\W_]+(?:[-/.][^\W_]+)*|[^\w\s]")
+_NO_SPACE_BEFORE = set(".,;:!?)]}%»’”")
+_NO_SPACE_AFTER = set("([{«‘“")
 
 
 class DiffEngine:
@@ -44,10 +53,10 @@ class DiffEngine:
 
         return diff_items
 
-    # -- granular, word-level changes ---------------------------------------
+    # -- granular, token-level changes --------------------------------------
     def _section_changes(self, old_section: Section, new_section: Section) -> list[DiffItem]:
-        old_words, old_pages = _words_with_pages(old_section)
-        new_words, new_pages = _words_with_pages(new_section)
+        old_words, old_pages = _tokens_with_pages(old_section)
+        new_words, new_pages = _tokens_with_pages(new_section)
 
         if len(old_words) + len(new_words) <= TWO_LEVEL_WORD_LIMIT:
             return self._word_changes(
@@ -55,11 +64,11 @@ class DiffEngine:
                 0, len(old_words), 0, len(new_words), start_counter=0,
             )
 
-        # Very long section: diff lines first, then word-diff only changed lines.
+        # Very long section: diff lines first, then token-diff only changed lines.
         old_lines = [str(entry[1]) for entry in old_section.page_map] or [old_section.normalized_text]
         new_lines = [str(entry[1]) for entry in new_section.page_map] or [new_section.normalized_text]
-        old_offsets = _word_offsets(old_lines)
-        new_offsets = _word_offsets(new_lines)
+        old_offsets = _token_offsets(old_lines)
+        new_offsets = _token_offsets(new_lines)
         matcher = SequenceMatcher(None, old_lines, new_lines, autojunk=False)
         changes: list[DiffItem] = []
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
@@ -102,15 +111,22 @@ class DiffEngine:
             if canonical_key(old_part) == canonical_key(new_part):
                 continue
 
-            if tag == "insert":
+            # Classify by what actually differs (token-level): only-new -> added,
+            # only-old -> deleted, both sides have content -> changed.
+            has_old = bool(canonical_key(old_part))
+            has_new = bool(canonical_key(new_part))
+            if has_new and not has_old:
                 change_type = "added"
-            elif tag == "delete":
+            elif has_old and not has_new:
                 change_type = "deleted"
             else:
                 change_type = "changed"
 
             page_v1 = old_pages[min(i1, len(old_pages) - 1)] if old_pages else old_section.page_start
             page_v2 = new_pages[min(j1, len(new_pages) - 1)] if new_pages else new_section.page_start
+
+            old_prefix, old_change, old_suffix = _split_snippet(old_words, i1, i2)
+            new_prefix, new_change, new_suffix = _split_snippet(new_words, j1, j2)
             counter += 1
             changes.append(
                 DiffItem(
@@ -123,8 +139,14 @@ class DiffEngine:
                     page_v1=str(page_v1),
                     page_v2=str(page_v2),
                     deterministic_summary=self._summary(change_type),
-                    old_snippet=_context(old_words, i1, i2),
-                    new_snippet=_context(new_words, j1, j2),
+                    old_snippet=_join_tokens([old_prefix, old_change, old_suffix]),
+                    new_snippet=_join_tokens([new_prefix, new_change, new_suffix]),
+                    old_prefix=old_prefix,
+                    old_change=old_change,
+                    old_suffix=old_suffix,
+                    new_prefix=new_prefix,
+                    new_change=new_change,
+                    new_suffix=new_suffix,
                 )
             )
         return changes
@@ -152,34 +174,58 @@ class DiffEngine:
             deterministic_summary=f"Section {change_type}.",
             old_snippet=snippet if change_type == "deleted" else "",
             new_snippet=snippet if change_type == "added" else "",
+            old_change=snippet if change_type == "deleted" else "",
+            new_change=snippet if change_type == "added" else "",
         )
 
 
-def _words_with_pages(section: Section) -> tuple[list[str], list[int]]:
-    """Flatten a section's comparison text into words tagged with their page."""
-    words: list[str] = []
+def _tokenize(text: str) -> list[str]:
+    return TOKEN_RE.findall(text)
+
+
+def _tokens_with_pages(section: Section) -> tuple[list[str], list[int]]:
+    """Flatten a section's comparison text into tokens tagged with their page."""
+    tokens: list[str] = []
     pages: list[int] = []
     for entry in section.page_map:
         page, text = int(entry[0]), str(entry[1])
-        for word in text.split():
-            words.append(word)
+        for token in _tokenize(text):
+            tokens.append(token)
             pages.append(page)
-    if not words:  # legacy/fallback sections without a page map
-        words = section.normalized_text.split()
-        pages = [section.page_start] * len(words)
-    return words, pages
+    if not tokens:  # legacy/fallback sections without a page map
+        tokens = _tokenize(section.normalized_text)
+        pages = [section.page_start] * len(tokens)
+    return tokens, pages
 
 
-def _word_offsets(lines: list[str]) -> list[int]:
-    """Prefix word counts: offsets[k] = index of the first word of line k."""
+def _token_offsets(lines: list[str]) -> list[int]:
+    """Prefix token counts: offsets[k] = index of the first token of line k."""
     offsets = [0]
     for line in lines:
-        offsets.append(offsets[-1] + len(line.split()))
+        offsets.append(offsets[-1] + len(_tokenize(line)))
     return offsets
 
 
-def _context(words: list[str], start: int, end: int) -> str:
-    """The changed span plus a few words of context on each side."""
+def _split_snippet(tokens: list[str], start: int, end: int) -> tuple[str, str, str]:
+    """Return (prefix, change, suffix) around the changed span ``[start:end]``."""
     lo = max(0, start - CONTEXT_WORDS)
-    hi = min(len(words), end + CONTEXT_WORDS)
-    return " ".join(words[lo:hi])
+    hi = min(len(tokens), end + CONTEXT_WORDS)
+    prefix = _join_tokens(tokens[lo:start])
+    change = _join_tokens(tokens[start:end])
+    suffix = _join_tokens(tokens[end:hi])
+    return prefix, change, suffix
+
+
+def _join_tokens(parts: list[str]) -> str:
+    """Join tokens/fragments into readable text (no space before punctuation)."""
+    out = ""
+    for part in parts:
+        if not part:
+            continue
+        if not out:
+            out = part
+        elif part[0] in _NO_SPACE_BEFORE or out[-1] in _NO_SPACE_AFTER:
+            out += part
+        else:
+            out += " " + part
+    return out

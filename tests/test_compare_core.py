@@ -59,6 +59,31 @@ class CompareCoreTests(unittest.TestCase):
         self.assertIn("H7RS", diff_items[0].old_snippet)
         self.assertIn("H8RS", diff_items[0].new_snippet)
 
+    def test_midsentence_insertion_is_added_not_changed(self) -> None:
+        # Words inserted into an otherwise-unchanged sentence = Added (not Changed).
+        old = document("old", "1 X\nthe protection is disabled, else it transmits NACK. After the transmission of the data.")
+        new = document("new", "1 X\nthe protection is disabled, else it transmits NACK and NASE especially. After the transmission of the data.")
+
+        diff_items = DiffEngine().diff(old, new, SectionMatcher().match(old, new))
+
+        self.assertTrue(any(d.change_type == "added" for d in diff_items))
+        self.assertFalse(any(d.change_type == "changed" for d in diff_items))
+        added = next(d for d in diff_items if d.change_type == "added")
+        self.assertIn("NASE", added.new_change)
+        self.assertEqual(added.old_change, "")  # nothing removed on the old side
+
+    def test_changed_isolates_only_the_changed_words(self) -> None:
+        old = document("old", "1 X\nplease refer to AN2606 for details now")
+        new = document("new", "1 X\nplease refer to AN2004 for details now")
+
+        diff_items = DiffEngine().diff(old, new, SectionMatcher().match(old, new))
+        self.assertEqual(len(diff_items), 1)
+        item = diff_items[0]
+        self.assertEqual(item.change_type, "changed")
+        self.assertEqual(item.old_change, "AN2606")  # only the changed token is isolated
+        self.assertEqual(item.new_change, "AN2004")
+        self.assertIn("refer to", item.old_prefix)
+
     def test_reports_every_change_in_one_paragraph(self) -> None:
         # Three independent edits in the same paragraph must be reported separately.
         old = document("old", "1 List\nIf N = 0 first then. If N = 0 second then. If N = 0 third then.")

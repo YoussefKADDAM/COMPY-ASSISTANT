@@ -130,6 +130,14 @@ class DiffItem:
     new_snippet: str = ""
     severity: str = ""
     ai_summary: str = ""
+    # Snippets split so the UI/report can colour ONLY the changed words: the
+    # prefix/suffix are unchanged context, the *_change part is what differs.
+    old_prefix: str = ""
+    old_change: str = ""
+    old_suffix: str = ""
+    new_prefix: str = ""
+    new_change: str = ""
+    new_suffix: str = ""
 
 
 @dataclass

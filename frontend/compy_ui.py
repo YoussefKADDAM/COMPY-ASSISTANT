@@ -12,8 +12,15 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from PySide6.QtCore import Qt, QThread, Signal
-    from PySide6.QtGui import QBrush, QColor, QFont, QPixmap
+    from PySide6.QtCore import QRectF, QSize, Qt, QThread, Signal
+    from PySide6.QtGui import (
+        QAbstractTextDocumentLayout,
+        QBrush,
+        QColor,
+        QFont,
+        QPixmap,
+        QTextDocument,
+    )
     from PySide6.QtWidgets import (
         QAbstractItemView,
         QApplication,
@@ -25,6 +32,9 @@ try:
         QMainWindow,
         QMessageBox,
         QPushButton,
+        QStyle,
+        QStyledItemDelegate,
+        QStyleOptionViewItem,
         QTableWidget,
         QTableWidgetItem,
         QTabWidget,
@@ -54,11 +64,18 @@ def _ensure_project_root() -> None:
         sys.path.insert(0, str(PROJECT_ROOT))
 
 
-# Change type -> (label with emoji, light row background, strong text colour).
+# Dark theme for the results table.
+TABLE_BG = "#2b2b2b"
+TABLE_FG = "#f0f0f0"
+ADDED_COLOR = "#3fb950"    # bright green on dark grey
+DELETED_COLOR = "#f85149"  # bright red on dark grey
+CHANGED_COLOR = "#e3a008"  # amber/orange
+
+# Change type -> (label with emoji, strong text colour for the Type cell).
 TYPE_STYLE = {
-    "added": ("🟢 Added", "#e6f4ea", "#1a7f37"),
-    "deleted": ("🔴 Deleted", "#fde8e6", "#b42318"),
-    "changed": ("🟠 Changed", "#fdf0e3", "#b54708"),
+    "added": ("🟢 Added", ADDED_COLOR),
+    "deleted": ("🔴 Deleted", DELETED_COLOR),
+    "changed": ("🟠 Changed", CHANGED_COLOR),
 }
 
 
@@ -104,7 +121,33 @@ def change_record(item: object) -> dict:
         "page": str(getattr(item, "page_v2", "") or getattr(item, "page_v1", "")).strip(),
         "old": " ".join(str(getattr(item, "old_snippet", "")).split()),
         "new": " ".join(str(getattr(item, "new_snippet", "")).split()),
+        "old_prefix": str(getattr(item, "old_prefix", "")),
+        "old_change": str(getattr(item, "old_change", "")),
+        "old_suffix": str(getattr(item, "old_suffix", "")),
+        "new_prefix": str(getattr(item, "new_prefix", "")),
+        "new_change": str(getattr(item, "new_change", "")),
+        "new_suffix": str(getattr(item, "new_suffix", "")),
     }
+
+
+def _snippet_html(prefix: str, change: str, suffix: str, full: str, color: str) -> str:
+    """White context with ONLY the changed words coloured (red for old, green for new)."""
+    from html import escape
+
+    if not change and not prefix and not suffix:
+        # Whole-section add/remove (no fine-grained span): colour the whole snippet.
+        body = f'<span style="color:{color}">{escape(full)}</span>' if full else ""
+        return f'<span style="color:{TABLE_FG}">{body}</span>'
+    parts = []
+    if prefix:
+        parts.append(escape(prefix))
+    if change:
+        parts.append(f'<span style="color:{color}; font-weight:bold">{escape(change)}</span>')
+    text = " ".join(parts)
+    if suffix:
+        sep = "" if suffix[0] in ".,;:!?)]}%" else " "
+        text = f"{text}{sep}{escape(suffix)}"
+    return f'<span style="color:{TABLE_FG}">{text}</span>'
 
 
 def format_diff_item(item: object) -> str:
@@ -157,6 +200,40 @@ def _shorten(value: str, limit: int = 180) -> str:
     return cleaned[: limit - 3].rstrip() + "..."
 
 
+class RichTextDelegate(QStyledItemDelegate):
+    """Render a cell's HTML (so only the changed words are coloured) on dark grey."""
+
+    def paint(self, painter, option, index) -> None:
+        options = QStyleOptionViewItem(option)
+        self.initStyleOption(options, index)
+        painter.save()
+        if options.state & QStyle.State_Selected:
+            painter.fillRect(option.rect, options.palette.highlight())
+        else:
+            background = index.data(Qt.BackgroundRole)
+            painter.fillRect(option.rect, background if background is not None else QColor(TABLE_BG))
+
+        doc = QTextDocument()
+        doc.setHtml(options.text or "")
+        doc.setTextWidth(max(0, option.rect.width() - 8))
+        painter.translate(option.rect.left() + 4, option.rect.top() + 3)
+        clip = QRectF(0, 0, option.rect.width() - 8, option.rect.height() - 6)
+        painter.setClipRect(clip)
+        ctx = QAbstractTextDocumentLayout.PaintContext()
+        ctx.clip = clip
+        doc.documentLayout().draw(painter, ctx)
+        painter.restore()
+
+    def sizeHint(self, option, index) -> QSize:
+        options = QStyleOptionViewItem(option)
+        self.initStyleOption(options, index)
+        doc = QTextDocument()
+        doc.setHtml(options.text or "")
+        width = options.rect.width() if options.rect.width() > 0 else 320
+        doc.setTextWidth(max(0, width - 8))
+        return QSize(int(doc.idealWidth()) + 8, int(doc.size().height()) + 8)
+
+
 class MainWindow(QMainWindow):
     def __init__(self) -> None:
         super().__init__()
@@ -206,6 +283,17 @@ class MainWindow(QMainWindow):
         table.setSelectionBehavior(QAbstractItemView.SelectRows)
         table.setWordWrap(True)
         table.verticalHeader().setVisible(False)
+        table.setStyleSheet(
+            f"QTableWidget {{ background-color: {TABLE_BG}; color: {TABLE_FG};"
+            f" gridline-color: #444; }}"
+            f" QHeaderView::section {{ background-color: #1f1f1f; color: {TABLE_FG};"
+            f" padding: 6px; border: 0px; font-weight: 600; }}"
+            f" QTableCornerButton::section {{ background-color: #1f1f1f; }}"
+        )
+        # Render the V1/V2 columns as HTML so only the changed words are coloured.
+        self.rich_delegate = RichTextDelegate(table)
+        table.setItemDelegateForColumn(4, self.rich_delegate)
+        table.setItemDelegateForColumn(5, self.rich_delegate)
         header = table.horizontalHeader()
         for col in (0, 1, 3):
             header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
@@ -298,27 +386,36 @@ class MainWindow(QMainWindow):
 
     def _populate_table(self, records: list) -> None:
         self.table.setRowCount(len(records))
+        bg = QBrush(QColor(TABLE_BG))
+        white = QBrush(QColor(TABLE_FG))
         for row, record in enumerate(records):
-            label, bg, fg = TYPE_STYLE.get(record["type"], (record["type"].title(), "#ffffff", "#1f2933"))
+            label, type_color = TYPE_STYLE.get(record["type"], (record["type"].title(), TABLE_FG))
             type_item = QTableWidgetItem(label)
-            type_item.setForeground(QBrush(QColor(fg)))
-            font = QFont()
-            font.setBold(True)
-            type_item.setFont(font)
+            type_item.setForeground(QBrush(QColor(type_color)))
+            bold = QFont()
+            bold.setBold(True)
+            type_item.setFont(bold)
 
+            old_html = _snippet_html(
+                record["old_prefix"], record["old_change"], record["old_suffix"],
+                record["old"], DELETED_COLOR,
+            )
+            new_html = _snippet_html(
+                record["new_prefix"], record["new_change"], record["new_suffix"],
+                record["new"], ADDED_COLOR,
+            )
             cells = [
                 type_item,
                 QTableWidgetItem(record["number"] or "—"),
                 QTableWidgetItem(record["section"]),
                 QTableWidgetItem(f"Page {record['page']}" if record["page"] else ""),
-                QTableWidgetItem(record["old"]),
-                QTableWidgetItem(record["new"]),
+                QTableWidgetItem(old_html),  # delegate renders this as HTML
+                QTableWidgetItem(new_html),
             ]
-            # Old text reads red, new text reads green for quick scanning.
-            cells[4].setForeground(QBrush(QColor("#b42318")))
-            cells[5].setForeground(QBrush(QColor("#1a7f37")))
             for col, cell in enumerate(cells):
-                cell.setBackground(QBrush(QColor(bg)))
+                cell.setBackground(bg)
+                if col in (1, 2, 3):
+                    cell.setForeground(white)
                 cell.setTextAlignment(Qt.AlignTop | Qt.AlignLeft)
                 self.table.setItem(row, col, cell)
         self.table.resizeRowsToContents()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from .diff_engine import DiffEngine
@@ -75,7 +76,11 @@ class ComparisonPipeline:
         old_path = Path(pdf_v1)
         new_path = Path(pdf_v2)
 
+        timings: dict[str, float] = {}
+        run_start = time.perf_counter()
+
         old_extraction = new_extraction = None
+        stage_start = time.perf_counter()
         # Large documents: extract both versions in parallel processes (PyMuPDF is
         # not thread-safe). Small documents skip it -- process spawn overhead would
         # make them slower. Any failure falls back to sequential, so it never breaks.
@@ -93,8 +98,10 @@ class ComparisonPipeline:
         if old_extraction is None or new_extraction is None:
             old_extraction = self.extractor.extract(old_path, old_doc_dir, progress, debug)
             new_extraction = self.extractor.extract(new_path, new_doc_dir, progress, debug)
+        timings["extraction"] = time.perf_counter() - stage_start
 
         notify("Structuring sections...")
+        stage_start = time.perf_counter()
         old_document = self.normalizer.normalize(
             document_id=slugify(old_path.stem, "document_v1"),
             source_pdf=old_path.name,
@@ -107,15 +114,28 @@ class ComparisonPipeline:
             extraction=new_extraction,
             output_dir=new_doc_dir,
         )
+        timings["structuring"] = time.perf_counter() - stage_start
 
         notify("Matching sections...")
+        stage_start = time.perf_counter()
         matches = self.matcher.match(old_document, new_document)
+        timings["matching"] = time.perf_counter() - stage_start
+
         notify("Comparing changed sections...")
+        stage_start = time.perf_counter()
         diff_items = self.diff_engine.diff(old_document, new_document, matches)
+        timings["diffing"] = time.perf_counter() - stage_start
+
         notify("Summarizing changes...")
+        stage_start = time.perf_counter()
         summarized = self.summarizer.summarize(diff_items)
+        timings["summarizing"] = time.perf_counter() - stage_start
+
         notify("Writing report..." if out is not None else "Finalizing...")
+        stage_start = time.perf_counter()
         revision_entries = self.report_builder.build(summarized, matches, out)
+        timings["reporting"] = time.perf_counter() - stage_start
+        timings["total"] = time.perf_counter() - run_start
 
         return ComparisonJobResult(
             old_document=old_document,
@@ -125,4 +145,5 @@ class ComparisonPipeline:
             revision_entries=revision_entries,
             output_dir=str(out) if out is not None else "",
             kpi_summary=ReportBuilder.kpi_summary(summarized),
+            timings=timings,
         )

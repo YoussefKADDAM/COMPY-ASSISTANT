@@ -157,6 +157,7 @@ class ComparisonJobResult:
     revision_entries: List[RevisionEntry]
     output_dir: str
     kpi_summary: Dict[str, int] = field(default_factory=dict)
+    timings: Dict[str, float] = field(default_factory=dict)  # stage -> seconds
 
     @property
     def changes(self) -> List[DiffItem]:

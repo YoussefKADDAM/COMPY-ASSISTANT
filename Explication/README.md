@@ -20,6 +20,7 @@ fast, cheap, and reliable — the computer never "guesses" what changed.
 
 - **[MVP1.md](MVP1.md)** — Comparing the *text* of small PDFs (the foundation).
 - **[MVP2.md](MVP2.md)** — Making it work on *huge* PDFs (hundreds–thousands of pages).
+- **[UI.md](UI.md)** — A tour of the desktop app and what every panel shows.
 
 (More files will be added for MVP3 tables, MVP4 figures, MVP5 export, as we build them.)
 

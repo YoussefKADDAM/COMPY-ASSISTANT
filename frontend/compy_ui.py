@@ -80,7 +80,7 @@ TYPE_STYLE = {
 
 
 class CompareWorker(QThread):
-    finished_ok = Signal(str, list)
+    finished_ok = Signal(str, list, dict)
     failed = Signal(str)
     progress = Signal(str)
 
@@ -106,7 +106,21 @@ class CompareWorker(QThread):
             self.failed.emit(f"Comparison failed: {exc}")
             return
         records = [change_record(item) for item in result.diff_items]
-        self.finished_ok.emit(result.output_dir, records)
+        old_meta = result.old_document.document_metadata
+        new_meta = result.new_document.document_metadata
+        compared = [s for s in result.new_document.sections if s.comparison_enabled]
+        changed_sections = len({c.section_number for c in result.diff_items if c.section_number})
+        meta = {
+            "timings": dict(result.timings),
+            "v1_title": old_meta.title or old_meta.file_name,
+            "v1_pages": old_meta.page_count,
+            "v2_title": new_meta.title or new_meta.file_name,
+            "v2_pages": new_meta.page_count,
+            "sections_total": len(result.new_document.sections),
+            "sections_compared": len(compared),
+            "sections_changed": changed_sections,
+        }
+        self.finished_ok.emit(result.output_dir, records, meta)
 
 
 def change_record(item: object) -> dict:
@@ -186,6 +200,16 @@ def _record_line(record: dict) -> str:
     return f"Changed {where}: {_shorten(record['old'])} -> {_shorten(record['new'])}"
 
 
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds as 'MM:SS min' (>= 1 min) or 'S.s sec' (under a minute)."""
+    seconds = max(0.0, float(seconds or 0))
+    minutes = int(seconds // 60)
+    rest = seconds - minutes * 60
+    if minutes > 0:
+        return f"{minutes:02d}:{int(round(rest)):02d} min"
+    return f"{rest:.1f} sec"
+
+
 def _section_label(number: str, title: str) -> str:
     label = f"{number} {title}".strip()
     return label or "Document"
@@ -240,6 +264,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("COMPY")
         self.setMinimumSize(860, 560)
         self.worker: CompareWorker | None = None
+        self._preview: dict = {}  # tag -> (title, pages) for the PDF-info panel
 
         self.v1_input = QLineEdit()
         self.v2_input = QLineEdit()
@@ -252,17 +277,33 @@ class MainWindow(QMainWindow):
         self.kpi_label.setStyleSheet("font-size: 15px; font-weight: 600; padding: 6px 2px;")
         self.table = self._build_table()
 
+        # Small panel under the Compare button: per-version PDF title + page count.
+        self.pdf_info = QLabel("")
+        self.pdf_info.setTextFormat(Qt.RichText)
+        self.pdf_info.setWordWrap(True)
+        self.pdf_info.setStyleSheet(
+            "background:#1f1f1f; color:#e8e8e8; border-radius:6px; padding:8px 12px; font-size:13px;"
+        )
+        # Bottom panel: processing-time + section KPIs.
+        self.stats_panel = QLabel("")
+        self.stats_panel.setTextFormat(Qt.RichText)
+        self.stats_panel.setWordWrap(True)
+        self.stats_panel.setStyleSheet(
+            "background:#03234B; color:#ffffff; border-radius:6px; padding:10px 14px; font-size:13px;"
+        )
+
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.addWidget(self._header())
-        layout.addLayout(self._file_row("PDF V1", self.v1_input))
-        layout.addLayout(self._file_row("PDF V2", self.v2_input))
+        layout.addLayout(self._file_row("PDF V1", self.v1_input, tag="V1"))
+        layout.addLayout(self._file_row("PDF V2", self.v2_input, tag="V2"))
         layout.addLayout(self._file_row("Output", self.output_input, directory=True))
 
         compare_button = QPushButton("Compare")
         compare_button.clicked.connect(self.compare)
         layout.addWidget(compare_button)
         layout.addWidget(self.status)
+        layout.addWidget(self.pdf_info)
 
         changes_tab = QWidget()
         changes_layout = QVBoxLayout(changes_tab)
@@ -273,6 +314,7 @@ class MainWindow(QMainWindow):
         tabs.addTab(changes_tab, "Changes")
         tabs.addTab(self.log, "Log")
         layout.addWidget(tabs)
+        layout.addWidget(self.stats_panel)
         self.setCentralWidget(root)
 
     def _build_table(self) -> QTableWidget:
@@ -318,17 +360,17 @@ class MainWindow(QMainWindow):
         return widget
 
     def _file_row(
-        self, label: str, line_edit: QLineEdit, directory: bool = False
+        self, label: str, line_edit: QLineEdit, directory: bool = False, tag: str = ""
     ) -> QHBoxLayout:
         layout = QHBoxLayout()
         layout.addWidget(QLabel(label))
         layout.addWidget(line_edit)
         button = QPushButton("Browse")
-        button.clicked.connect(lambda: self._browse(line_edit, directory))
+        button.clicked.connect(lambda: self._browse(line_edit, directory, tag))
         layout.addWidget(button)
         return layout
 
-    def _browse(self, line_edit: QLineEdit, directory: bool) -> None:
+    def _browse(self, line_edit: QLineEdit, directory: bool, tag: str = "") -> None:
         if directory:
             selected = QFileDialog.getExistingDirectory(self, "Select output directory")
         else:
@@ -337,6 +379,8 @@ class MainWindow(QMainWindow):
             )
         if selected:
             line_edit.setText(selected)
+            if tag and not directory:
+                self._preview_pdf(tag, selected)
 
     def compare(self) -> None:
         if not self.v1_input.text() or not self.v2_input.text():
@@ -346,6 +390,7 @@ class MainWindow(QMainWindow):
         self.log.clear()
         self.table.setRowCount(0)
         self.kpi_label.setText("Comparing...")
+        self.stats_panel.setText("")
         self.log.append("Starting comparison.")
         self.worker = CompareWorker(
             self.v1_input.text(), self.v2_input.text(), self.output_input.text()
@@ -355,10 +400,12 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self.status.setText)
         self.worker.start()
 
-    def _finished(self, output_dir: str, records: list) -> None:
+    def _finished(self, output_dir: str, records: list, meta: dict) -> None:
         self.status.setText("Complete")
         self._populate_table(records)
         self._populate_kpis(records)
+        self._set_pdf_info(meta)
+        self._set_stats(meta)
 
         self.log.append(f"Detected {len(records)} changes.")
         if records:
@@ -419,6 +466,68 @@ class MainWindow(QMainWindow):
                 cell.setTextAlignment(Qt.AlignTop | Qt.AlignLeft)
                 self.table.setItem(row, col, cell)
         self.table.resizeRowsToContents()
+
+    def _set_pdf_info(self, meta: dict) -> None:
+        from html import escape
+
+        def line(tag: str, title: str, pages) -> str:
+            pages_txt = f"{pages} pages" if pages else "? pages"
+            return (
+                f'<b style="color:#5b9bd5">{tag}</b>&nbsp; {escape(str(title) or "—")}'
+                f'&nbsp;·&nbsp; <span style="color:#9fd3a0">{pages_txt}</span>'
+            )
+
+        self.pdf_info.setText(
+            line("V1", meta.get("v1_title", ""), meta.get("v1_pages"))
+            + "<br>"
+            + line("V2", meta.get("v2_title", ""), meta.get("v2_pages"))
+        )
+
+    def _set_stats(self, meta: dict) -> None:
+        t = meta.get("timings", {})
+        extraction = float(t.get("extraction", 0))
+        structuring = float(t.get("structuring", 0))
+        total = float(t.get("total", 0))
+        comparing = max(0.0, total - extraction - structuring)
+        timing = (
+            "⏱ <b>Processing time</b> &nbsp;—&nbsp; "
+            f"Extraction <b>{_fmt_duration(extraction)}</b> &nbsp;·&nbsp; "
+            f"Structuring Sections <b>{_fmt_duration(structuring)}</b> &nbsp;·&nbsp; "
+            f"Comparing <b>{_fmt_duration(comparing)}</b> &nbsp;·&nbsp; "
+            f"Total <b>{_fmt_duration(total)}</b>"
+        )
+        stats = (
+            "📊 <b>{total_s}</b> sections &nbsp;({compared} compared, {changed} changed)"
+            " &nbsp;·&nbsp; V1 {v1}p &nbsp;·&nbsp; V2 {v2}p"
+        ).format(
+            total_s=meta.get("sections_total", 0),
+            compared=meta.get("sections_compared", 0),
+            changed=meta.get("sections_changed", 0),
+            v1=meta.get("v1_pages", 0),
+            v2=meta.get("v2_pages", 0),
+        )
+        self.stats_panel.setText(timing + "<br>" + stats)
+
+    def _preview_pdf(self, tag: str, path: str) -> None:
+        """Best-effort: show title + page count as soon as a PDF is picked."""
+        try:
+            import fitz  # type: ignore
+
+            doc = fitz.open(path)
+            title = (doc.metadata or {}).get("title") or Path(path).name
+            pages = doc.page_count
+            doc.close()
+            self._preview[tag] = (title, pages)
+        except Exception:
+            self._preview[tag] = (Path(path).name, None)
+        self._set_pdf_info(
+            {
+                "v1_title": self._preview.get("V1", ("", None))[0],
+                "v1_pages": self._preview.get("V1", ("", None))[1],
+                "v2_title": self._preview.get("V2", ("", None))[0],
+                "v2_pages": self._preview.get("V2", ("", None))[1],
+            }
+        )
 
     def _failed(self, message: str) -> None:
         self.status.setText("Failed")

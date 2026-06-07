@@ -53,6 +53,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  Added:   {kpis['added']}")
     print(f"  Deleted: {kpis['deleted']}")
     print(f"  Changed: {kpis['changed']}")
+    t = result.timings
+    if t:
+        print(
+            f"Time: extraction {t.get('extraction', 0):.1f}s, "
+            f"structuring {t.get('structuring', 0):.1f}s, "
+            f"comparing {t.get('matching', 0) + t.get('diffing', 0):.1f}s, "
+            f"total {t.get('total', 0):.1f}s"
+        )
     print(f"Artifacts written to: {result.output_dir}")
     return 0
 

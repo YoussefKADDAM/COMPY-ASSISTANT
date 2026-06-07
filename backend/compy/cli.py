@@ -20,7 +20,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-provider", default="none", choices=["none", "openai", "stgpt"], help="LLM provider for summaries")
     parser.add_argument("--llm-model", default="gpt-4o-mini", help="Model name for the configured provider")
     parser.add_argument("--llm-base-url", default="", help="Override chat-completions compatible endpoint")
+    parser.add_argument("--debug", action="store_true", help="Also write the large per-page pages.json artifact")
     return parser
+
+
+def _log(message: str) -> None:
+    print(message, file=sys.stderr, flush=True)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,7 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     engine = CompyEngine(config)
     try:
-        result = engine.compare(args.pdf_v1, args.pdf_v2, Path(args.output_dir))
+        result = engine.compare(args.pdf_v1, args.pdf_v2, Path(args.output_dir), progress=_log, debug=args.debug)
     except PdfExtractionError as exc:
         print(f"PDF extraction failed: {exc}", file=sys.stderr)
         return 2

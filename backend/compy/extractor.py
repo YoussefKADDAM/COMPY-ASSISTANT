@@ -52,20 +52,29 @@ class PdfExtractionError(RuntimeError):
 
 
 class PdfExtractor:
-    def extract(self, pdf_path: str | Path, output_dir: str | Path | None = None) -> ExtractionResult:
+    def extract(
+        self,
+        pdf_path: str | Path,
+        output_dir: str | Path | None = None,
+        progress: "Callable[[str], None] | None" = None,
+        debug_artifacts: bool = False,
+    ) -> ExtractionResult:
         path = Path(pdf_path)
         if not path.exists():
             raise PdfExtractionError(f"PDF not found: {path}")
         if path.suffix.lower() != ".pdf":
             raise PdfExtractionError(f"Expected a .pdf file, got: {path}")
 
-        result = self._extract_with_fitz(path)
+        result = self._extract_with_fitz(path, progress)
 
         if output_dir is not None:
             out = Path(output_dir)
             write_json(out / "metadata.json", to_dict(result.metadata))
-            write_json(out / "pages.json", [to_dict(page) for page in result.pages])
             write_json(out / "outline.json", [to_dict(entry) for entry in result.outline])
+            # pages.json is one record per page (raw text + bboxes) and becomes huge
+            # on large PDFs, so it is only written when debug artifacts are requested.
+            if debug_artifacts:
+                write_json(out / "pages.json", [to_dict(page) for page in result.pages])
             write_text(
                 out / "extract_log.txt",
                 f"Extracted {len(result.pages)} pages from {path.name}; "
@@ -76,7 +85,7 @@ class PdfExtractor:
         return result
 
     # -- core ----------------------------------------------------------------
-    def _extract_with_fitz(self, path: Path) -> ExtractionResult:
+    def _extract_with_fitz(self, path: Path, progress=None) -> ExtractionResult:
         try:
             import fitz  # type: ignore  # PyMuPDF
         except ImportError as exc:  # pragma: no cover - environment guard
@@ -86,15 +95,24 @@ class PdfExtractor:
 
         doc = fitz.open(str(path))
         pdf_meta = {str(k): str(v) for k, v in (doc.metadata or {}).items() if v}
+        total = doc.page_count
+        step = max(1, total // 50)  # throttle progress to ~50 updates
 
         # Pass 1: collect body-candidate blocks per page (geometry filtering only).
         page_infos = []
         for index, page in enumerate(doc):
+            if progress is not None and (index % step == 0 or index == total - 1):
+                progress(f"Extracting {path.name}: page {index + 1}/{total}")
             # rawdict gives per-character positions so we can repair PDFs whose text
             # was encoded without space glyphs (e.g. "Thehostinitialization").
             raw_blocks = page.get_text("rawdict").get("blocks", [])
-            table_rects = self._table_rects(page)
-            figure_rects = self._figure_rects(page, fitz, raw_blocks)
+            drawings = self._safe_drawings(page)
+            has_image = any(block.get("type") == 1 for block in raw_blocks)
+            # find_tables() is expensive; only run it on pages that actually contain
+            # vector graphics or images (tables have ruling lines). Pure-prose pages
+            # skip it entirely -- the key speed win on thousand-page manuals.
+            table_rects = self._table_rects(page) if (drawings or has_image) else []
+            figure_rects = self._figure_rects(page, fitz, raw_blocks, drawings)
             exclusion = [self._expand(r, RECT_MARGIN) for r in (table_rects + figure_rects)]
             candidates = self._candidate_blocks(raw_blocks, float(page.rect.height), exclusion)
             page_infos.append(
@@ -184,7 +202,14 @@ class PdfExtractor:
         except Exception:
             return []
 
-    def _figure_rects(self, page, fitz, blocks) -> list:
+    @staticmethod
+    def _safe_drawings(page) -> list:
+        try:
+            return page.get_drawings()
+        except Exception:
+            return []
+
+    def _figure_rects(self, page, fitz, blocks, drawings) -> list:
         rects: list = []
         # 1) Embedded raster images.
         try:
@@ -195,9 +220,7 @@ class PdfExtractor:
             pass
         # 2) Vector-drawing clusters (block diagrams, flowcharts).
         try:
-            draw_rects = [
-                fitz.Rect(d["rect"]) for d in page.get_drawings() if d.get("rect")
-            ]
+            draw_rects = [fitz.Rect(d["rect"]) for d in drawings if d.get("rect")]
             rects.extend(self._cluster_rects(draw_rects, fitz))
         except Exception:
             pass

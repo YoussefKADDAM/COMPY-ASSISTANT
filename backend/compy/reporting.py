@@ -16,6 +16,11 @@ CHANGE_STYLE = {
 }
 
 
+def _chapter_sort_key(chapter: str) -> tuple:
+    """Sort numeric chapters numerically, push '—' (no number) to the end."""
+    return (1, 0) if not chapter.isdigit() else (0, int(chapter))
+
+
 class ReportBuilder:
     def build(
         self,
@@ -33,6 +38,7 @@ class ReportBuilder:
             for item in diff_items
         ]
         kpis = self.kpi_summary(diff_items)
+        rollup = self.kpi_by_chapter(diff_items)
 
         # output_dir=None => in-memory only (embedding); write artifacts otherwise.
         if output_dir is not None:
@@ -41,7 +47,8 @@ class ReportBuilder:
             write_json(out / "diff_report.json", [to_dict(item) for item in diff_items])
             write_json(out / "revision_history_draft.json", [to_dict(entry) for entry in revision_entries])
             write_json(out / "kpi_summary.json", kpis)
-            write_text(out / "comparison_report.html", self._html_report(diff_items, kpis))
+            write_json(out / "kpi_by_chapter.json", rollup)
+            write_text(out / "comparison_report.html", self._html_report(diff_items, kpis, rollup))
         return revision_entries
 
     @staticmethod
@@ -52,6 +59,21 @@ class ReportBuilder:
                 counts[item.change_type] += 1
         counts["total"] = sum(counts[k] for k in ("added", "deleted", "changed"))
         return counts
+
+    @staticmethod
+    def kpi_by_chapter(diff_items: list[DiffItem]) -> dict:
+        """Roll up change counts by top-level chapter (e.g. '3.4.1' -> '3').
+
+        Useful on large documents where a flat list has thousands of rows.
+        """
+        rollup: dict[str, dict] = {}
+        for item in diff_items:
+            chapter = (item.section_number.split(".")[0] if item.section_number else "") or "—"
+            bucket = rollup.setdefault(chapter, {"added": 0, "deleted": 0, "changed": 0, "total": 0})
+            if item.change_type in bucket:
+                bucket[item.change_type] += 1
+                bucket["total"] += 1
+        return dict(sorted(rollup.items(), key=lambda kv: _chapter_sort_key(kv[0])))
 
     @staticmethod
     def _snippet_html(prefix: str, change: str, suffix: str, full: str, colour: str) -> str:
@@ -69,7 +91,23 @@ class ReportBuilder:
         return out
 
     @classmethod
-    def _html_report(cls, diff_items: list[DiffItem], kpis: dict) -> str:
+    def _html_report(cls, diff_items: list[DiffItem], kpis: dict, rollup: dict | None = None) -> str:
+        rollup = rollup or {}
+        rollup_rows = "".join(
+            f"<tr><td>{html.escape(chapter)}</td>"
+            f'<td style="color:#1a7f37">{counts["added"]}</td>'
+            f'<td style="color:#b42318">{counts["deleted"]}</td>'
+            f'<td style="color:#b54708">{counts["changed"]}</td>'
+            f'<td><b>{counts["total"]}</b></td></tr>'
+            for chapter, counts in rollup.items()
+        )
+        rollup_table = (
+            "<h2>By chapter</h2><table><thead><tr><th>Chapter</th><th>Added</th>"
+            "<th>Deleted</th><th>Changed</th><th>Total</th></tr></thead>"
+            f"<tbody>{rollup_rows}</tbody></table>"
+            if rollup_rows
+            else ""
+        )
         rows = []
         for item in diff_items:
             label, colour, bg = CHANGE_STYLE.get(item.change_type, (item.change_type, "#1f2933", "#ffffff"))
@@ -117,6 +155,8 @@ class ReportBuilder:
   <div class="kpis">{kpi_cards}
     <div class="kpi" style="background:#03234B"><div class="kpi-n">{kpis.get('total', 0)}</div><div class="kpi-l">Total</div></div>
   </div>
+  {rollup_table}
+  <h2>All changes</h2>
   <table>
     <thead><tr><th>Type</th><th>Section #</th><th>Section</th><th>Page</th><th>V1 (old)</th><th>V2 (new)</th></tr></thead>
     <tbody>{''.join(rows)}</tbody>

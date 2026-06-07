@@ -46,6 +46,7 @@ class CompyEngine:
         pdf_v2: str | Path,
         output_dir: str | Path | None = None,
         progress: Optional[Callable[[str], None]] = None,
+        debug: bool = False,
     ) -> ComparisonJobResult:
         """Compare two PDFs and return the result.
 
@@ -60,6 +61,7 @@ class CompyEngine:
         -------
         ComparisonJobResult with ``.changes`` (per-edit ``DiffItem`` list),
         ``.kpi_summary`` (added/deleted/changed/total), ``.revision_entries``,
-        and the matched documents.
+        and the matched documents. Set ``debug=True`` to also write the large
+        per-page ``pages.json`` artifact (off by default for large PDFs).
         """
-        return self._pipeline.run(pdf_v1, pdf_v2, output_dir, progress=progress)
+        return self._pipeline.run(pdf_v1, pdf_v2, output_dir, progress=progress, debug=debug)

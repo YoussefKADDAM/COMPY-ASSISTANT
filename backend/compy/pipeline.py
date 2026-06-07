@@ -42,6 +42,7 @@ class ComparisonPipeline:
         pdf_v2: str | Path,
         output_dir: str | Path | None = None,
         progress: "Callable[[str], None] | None" = None,
+        debug: bool = False,
     ) -> ComparisonJobResult:
         def notify(message: str) -> None:
             if progress is not None:
@@ -57,10 +58,8 @@ class ComparisonPipeline:
 
         old_path = Path(pdf_v1)
         new_path = Path(pdf_v2)
-        notify("Extracting V1...")
-        old_extraction = self.extractor.extract(old_path, old_doc_dir)
-        notify("Extracting V2...")
-        new_extraction = self.extractor.extract(new_path, new_doc_dir)
+        old_extraction = self.extractor.extract(old_path, old_doc_dir, progress, debug)
+        new_extraction = self.extractor.extract(new_path, new_doc_dir, progress, debug)
 
         notify("Structuring sections...")
         old_document = self.normalizer.normalize(

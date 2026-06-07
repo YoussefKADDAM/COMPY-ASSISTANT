@@ -24,6 +24,16 @@ class EngineApiTests(unittest.TestCase):
             {"added": 1, "deleted": 1, "changed": 2, "total": 4},
         )
 
+    def test_kpi_by_chapter_rollup(self) -> None:
+        items = [
+            DiffItem(diff_id="1", change_type="added", section_number="3.4"),
+            DiffItem(diff_id="2", change_type="changed", section_number="3.1.2"),
+            DiffItem(diff_id="3", change_type="deleted", section_number="5"),
+        ]
+        roll = ReportBuilder.kpi_by_chapter(items)
+        self.assertEqual(roll["3"], {"added": 1, "deleted": 0, "changed": 1, "total": 2})
+        self.assertEqual(roll["5"]["deleted"], 1)
+
     def test_report_builds_in_memory_without_writing(self) -> None:
         items = [DiffItem(diff_id="1", change_type="changed", section_number="1", section_title="X", new_snippet="b")]
         entries = ReportBuilder().build(items, [], output_dir=None)  # None => in-memory

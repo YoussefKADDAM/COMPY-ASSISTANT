@@ -33,14 +33,20 @@ Implemented so far (needs validation on large samples):
   only for residuals.
 - ✅ **Two-level diff** (item 3) — long sections diff by line first, then word-diff
   changed lines (guarded; normal sections keep the existing word-level path).
-- ✅ **Progress callbacks** (item 4, partial) — `pipeline.run(..., progress=cb)`;
-  the UI shows live stage status.
-- ✅ **Glued-word recovery** (item 6) — line text is rebuilt from per-character
-  positions (`rawdict`), inserting spaces where a positional gap has no space
-  glyph. Fixes the AN2V2 "Thehostinitialization" problem.
+- ✅ **Progress callbacks** (item 4, partial) — `pipeline.run(..., progress=cb)` now
+  reports **page-level** extraction progress (`page 1200/6000`); UI + CLI show it.
+- ✅ **Glued-word recovery** (item 6) — line text rebuilt from per-character
+  positions (`rawdict`). Fixes the AN2V2 "Thehostinitialization" problem.
+- ✅ **Per-page speed** — `find_tables()` (the main per-page cost) now runs **only
+  on pages with vector graphics/images**; pure-prose pages skip it. This is the key
+  win on thousand-page manuals.
+- ✅ **Opt-in `pages.json`** (item 2, partial) — the huge per-page artifact is only
+  written with `--debug` / `compare(..., debug=True)`; other artifacts always write.
+- ✅ **KPI rollups** (item 7) — `kpi_by_chapter` + `kpi_by_chapter.json` + a
+  "By chapter" table in the HTML report.
 
-Remaining: streamed/low-memory extraction + opt-in `pages.json` (item 2),
-process-pool parallelism (item 4), batched STGpt (item 5), KPI rollups (item 7).
+Remaining: deeper streamed/low-memory extraction (drop per-page `raw_text`,
+page-window mode), process-pool parallelism (item 4), batched STGpt (item 5).
 
 ## Work items
 

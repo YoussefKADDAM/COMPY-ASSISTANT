@@ -40,16 +40,20 @@ class ComparisonPipeline:
         self,
         pdf_v1: str | Path,
         pdf_v2: str | Path,
-        output_dir: str | Path,
+        output_dir: str | Path | None = None,
         progress: "Callable[[str], None] | None" = None,
     ) -> ComparisonJobResult:
         def notify(message: str) -> None:
             if progress is not None:
                 progress(message)
 
-        out = ensure_dir(Path(output_dir))
-        old_doc_dir = ensure_dir(out / "v1")
-        new_doc_dir = ensure_dir(out / "v2")
+        # output_dir=None => run fully in memory (no artifacts written), for embedding.
+        if output_dir is not None:
+            out: Path | None = ensure_dir(Path(output_dir))
+            old_doc_dir: Path | None = ensure_dir(out / "v1")
+            new_doc_dir: Path | None = ensure_dir(out / "v2")
+        else:
+            out = old_doc_dir = new_doc_dir = None
 
         old_path = Path(pdf_v1)
         new_path = Path(pdf_v2)
@@ -78,7 +82,7 @@ class ComparisonPipeline:
         diff_items = self.diff_engine.diff(old_document, new_document, matches)
         notify("Summarizing changes...")
         summarized = self.summarizer.summarize(diff_items)
-        notify("Writing report...")
+        notify("Writing report..." if out is not None else "Finalizing...")
         revision_entries = self.report_builder.build(summarized, matches, out)
 
         return ComparisonJobResult(
@@ -87,5 +91,6 @@ class ComparisonPipeline:
             section_matches=matches,
             diff_items=summarized,
             revision_entries=revision_entries,
-            output_dir=str(out),
+            output_dir=str(out) if out is not None else "",
+            kpi_summary=ReportBuilder.kpi_summary(summarized),
         )

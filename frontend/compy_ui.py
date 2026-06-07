@@ -92,11 +92,11 @@ class CompareWorker(QThread):
 
     def run(self) -> None:
         _ensure_project_root()
+        from backend.compy import CompyEngine
         from backend.compy.extractor import PdfExtractionError
-        from backend.compy.pipeline import ComparisonPipeline
 
         try:
-            result = ComparisonPipeline().run(
+            result = CompyEngine().compare(
                 self.pdf_v1, self.pdf_v2, self.output_dir, progress=self.progress.emit
             )
         except PdfExtractionError as exc:

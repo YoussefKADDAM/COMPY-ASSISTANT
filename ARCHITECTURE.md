@@ -18,6 +18,7 @@ limits.
 
 | Module | Responsibility |
 | --- | --- |
+| `engine.py` | **`CompyEngine`** — the public facade for embedding (see [docs/INTEGRATION.md](docs/INTEGRATION.md)). One `compare()` method; runs in memory or writes artifacts. |
 | `extractor.py` | **PyMuPDF** layout-aware extraction. Produces an `ExtractionResult`: per-page `PageArtifact` (raw + prose text, table/figure bboxes), the parsed bookmark `outline`, the geometry-filtered `prose_blocks`, and the dominant `body_font_size`. Geometry excludes tables, figures, headers/footers, captions. |
 | `normalizer.py` | Builds `Section`s. `OutlineSectionBuilder` (bookmarks) is primary; `FontHeadingSectionBuilder` (font-size heading detection) is the no-outline fallback; the old regex `SectionBuilder` is a last resort. Sets `comparison_enabled` per section type. |
 | `text_utils.py` | Generic, vocabulary-free helpers: normalization, hashing, canonical comparison text, and a thin structural safety net. |

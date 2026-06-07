@@ -21,9 +21,8 @@ class ReportBuilder:
         self,
         diff_items: list[DiffItem],
         section_matches: list[SectionMatch],
-        output_dir: str | Path,
+        output_dir: str | Path | None,
     ) -> list[RevisionEntry]:
-        out = Path(output_dir)
         revision_entries = [
             RevisionEntry(
                 section=f"{item.section_number} {item.section_title}".strip() or "Document",
@@ -35,11 +34,14 @@ class ReportBuilder:
         ]
         kpis = self.kpi_summary(diff_items)
 
-        write_json(out / "section_matches.json", [to_dict(match) for match in section_matches])
-        write_json(out / "diff_report.json", [to_dict(item) for item in diff_items])
-        write_json(out / "revision_history_draft.json", [to_dict(entry) for entry in revision_entries])
-        write_json(out / "kpi_summary.json", kpis)
-        write_text(out / "comparison_report.html", self._html_report(diff_items, kpis))
+        # output_dir=None => in-memory only (embedding); write artifacts otherwise.
+        if output_dir is not None:
+            out = Path(output_dir)
+            write_json(out / "section_matches.json", [to_dict(match) for match in section_matches])
+            write_json(out / "diff_report.json", [to_dict(item) for item in diff_items])
+            write_json(out / "revision_history_draft.json", [to_dict(entry) for entry in revision_entries])
+            write_json(out / "kpi_summary.json", kpis)
+            write_text(out / "comparison_report.html", self._html_report(diff_items, kpis))
         return revision_entries
 
     @staticmethod

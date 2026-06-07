@@ -7,9 +7,9 @@ import os
 import sys
 from pathlib import Path
 
+from .engine import CompyEngine
 from .extractor import PdfExtractionError
 from .llm import LLMConfig
-from .pipeline import ComparisonPipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -36,16 +36,14 @@ def main(argv: list[str] | None = None) -> int:
         api_key=api_key,
         base_url=args.llm_base_url,
     )
-    pipeline = ComparisonPipeline.with_llm_config(config)
+    engine = CompyEngine(config)
     try:
-        result = pipeline.run(args.pdf_v1, args.pdf_v2, Path(args.output_dir))
+        result = engine.compare(args.pdf_v1, args.pdf_v2, Path(args.output_dir))
     except PdfExtractionError as exc:
         print(f"PDF extraction failed: {exc}", file=sys.stderr)
         return 2
 
-    from .reporting import ReportBuilder
-
-    kpis = ReportBuilder.kpi_summary(result.diff_items)
+    kpis = result.kpi_summary
     print(f"COMPY comparison complete: {kpis['total']} changes detected")
     print(f"  Added:   {kpis['added']}")
     print(f"  Deleted: {kpis['deleted']}")

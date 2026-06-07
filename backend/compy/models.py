@@ -156,6 +156,12 @@ class ComparisonJobResult:
     diff_items: List[DiffItem]
     revision_entries: List[RevisionEntry]
     output_dir: str
+    kpi_summary: Dict[str, int] = field(default_factory=dict)
+
+    @property
+    def changes(self) -> List[DiffItem]:
+        """Alias for diff_items (reads naturally when embedding)."""
+        return self.diff_items
 
 
 def to_dict(value: Any) -> Any:

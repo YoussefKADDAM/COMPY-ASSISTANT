@@ -34,6 +34,7 @@ from .text_utils import normalize_text
 HEADER_BAND = 0.105   # text whose bottom is above this fraction is a running header
 FOOTER_BAND = 0.955   # text whose top is below this fraction is a page footer
 TINY_FONT_PT = 7.5    # drawing IDs / micro-labels (e.g. "DT62937V1") sit below this
+SPACE_GAP_RATIO = 0.2  # insert a space when chars are this far apart but no space glyph
 RECT_MARGIN = 3.0     # expand exclusion rects slightly to catch edge labels
 DRAW_CLUSTER_MIN_AREA = 1500.0  # ignore stray underlines; keep real diagram clusters
 SUBBODY_FONT_DELTA = 0.4   # a line this much smaller than body font is sub-body
@@ -89,10 +90,13 @@ class PdfExtractor:
         # Pass 1: collect body-candidate blocks per page (geometry filtering only).
         page_infos = []
         for index, page in enumerate(doc):
+            # rawdict gives per-character positions so we can repair PDFs whose text
+            # was encoded without space glyphs (e.g. "Thehostinitialization").
+            raw_blocks = page.get_text("rawdict").get("blocks", [])
             table_rects = self._table_rects(page)
-            figure_rects = self._figure_rects(page, fitz)
+            figure_rects = self._figure_rects(page, fitz, raw_blocks)
             exclusion = [self._expand(r, RECT_MARGIN) for r in (table_rects + figure_rects)]
-            candidates = self._candidate_blocks(page, float(page.rect.height), exclusion)
+            candidates = self._candidate_blocks(raw_blocks, float(page.rect.height), exclusion)
             page_infos.append(
                 {
                     "index": index,
@@ -180,11 +184,11 @@ class PdfExtractor:
         except Exception:
             return []
 
-    def _figure_rects(self, page, fitz) -> list:
+    def _figure_rects(self, page, fitz, blocks) -> list:
         rects: list = []
         # 1) Embedded raster images.
         try:
-            for block in page.get_text("dict").get("blocks", []):
+            for block in blocks:
                 if block.get("type") == 1:
                     rects.append(_rect(page, block["bbox"]))
         except Exception:
@@ -219,20 +223,17 @@ class PdfExtractor:
         return [c for c in clusters if c.get_area() >= DRAW_CLUSTER_MIN_AREA]
 
     # -- body text -----------------------------------------------------------
-    def _candidate_blocks(self, page, height: float, exclusion: list) -> list:
+    def _candidate_blocks(self, blocks, height: float, exclusion: list) -> list:
         """Geometry pass: keep body lines, drop headers/footers/captions/regions.
 
         Returns a list of blocks: ``{x0, y0, lines: [(text, size, words), ...]}``.
         Font-based orphan filtering happens later, once the document's dominant
-        body size is known.
+        body size is known. ``blocks`` come from ``get_text("rawdict")`` so line
+        text can be rebuilt from character positions (repairs missing spaces).
         """
         header_cut = height * HEADER_BAND
         footer_cut = height * FOOTER_BAND
         out: list = []
-        try:
-            blocks = page.get_text("dict").get("blocks", [])
-        except Exception:
-            return out
         for block in blocks:
             if block.get("type") != 0:
                 continue
@@ -244,7 +245,7 @@ class PdfExtractor:
                     continue
                 if any(_contains(r, cx, cy) for r in exclusion):
                     continue
-                text = "".join(s["text"] for s in line.get("spans", [])).strip()
+                text = _reconstruct_line_text(line).strip()
                 if not text or CAPTION_RE.match(text):
                     continue
                 size = max((s.get("size", 0.0) for s in line.get("spans", [])), default=0.0)
@@ -343,6 +344,48 @@ def classify_section_type(title: str) -> str:
     if lowered.startswith("appendix"):
         return "appendix"
     return "main_content"
+
+
+def _reconstruct_line_text(line: dict) -> str:
+    """Rebuild a line's text from character positions, repairing missing spaces.
+
+    Some PDFs encode text without space glyphs and rely on positioning instead
+    (e.g. "Thehostinitialization configuresI3Cas"). We walk the per-character
+    bounding boxes and insert a space wherever there is a horizontal gap but no
+    space character, so the comparison sees real words. Falls back to plain span
+    concatenation when character data is unavailable.
+    """
+    parts: list[str] = []
+    prev_x1: float | None = None
+    has_chars = False
+    for span in line.get("spans", []):
+        size = float(span.get("size", 0.0) or 0.0)
+        chars = span.get("chars")
+        if not chars:
+            text = span.get("text", "")
+            parts.append(text)
+            if text:
+                prev_x1 = float(span.get("bbox", (0, 0, 0, 0))[2])
+            continue
+        has_chars = True
+        for char in chars:
+            value = char.get("c", "")
+            if not value:
+                continue
+            bbox = char.get("bbox") or (0.0, 0.0, 0.0, 0.0)
+            x0, x1 = float(bbox[0]), float(bbox[2])
+            if (
+                prev_x1 is not None
+                and not value.isspace()
+                and size
+                and (x0 - prev_x1) > SPACE_GAP_RATIO * size
+                and (not parts or not parts[-1].isspace())
+            ):
+                parts.append(" ")
+            parts.append(value)
+            prev_x1 = x1
+    text = "".join(parts)
+    return text if has_chars or text else ""
 
 
 def _rect(page, bbox):

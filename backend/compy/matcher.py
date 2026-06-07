@@ -18,7 +18,38 @@ class SectionMatcher:
         new_corpus_key = canonical_key(" ".join(page.raw_text or page.normalized_text for page in new_document.pages))
         matches: list[SectionMatch] = []
 
+        # Fast path: resolve section-number and exact-title matches with O(1) index
+        # lookups so we never run similarity against every candidate. This keeps
+        # matching ~O(n) on documents with thousands of sections (MVP2).
+        new_by_number: dict[str, Section] = {}
+        new_by_title: dict[str, Section] = {}
+        for section in new_sections:
+            if section.number:
+                new_by_number.setdefault(section.number, section)
+            new_by_title.setdefault(self._title_key(section), section)
+
+        residual_old: list[Section] = []
         for old_section in old_sections:
+            indexed = self._indexed_match(old_section, new_by_number, new_by_title, unmatched_new)
+            if indexed is None:
+                residual_old.append(old_section)
+                continue
+            new_section, score, reason = indexed
+            del unmatched_new[new_section.section_id]
+            matches.append(
+                SectionMatch(
+                    match_id=f"match_{old_section.section_id}_{new_section.section_id}",
+                    status="matched",
+                    old_section_id=old_section.section_id,
+                    new_section_id=new_section.section_id,
+                    score=score,
+                    reason=reason,
+                )
+            )
+
+        # Slow path: only the residual (un-indexed) sections fall back to text
+        # similarity, and only against the remaining unmatched candidates.
+        for old_section in residual_old:
             new_section, score, reason = self._best_match(old_section, list(unmatched_new.values()))
             if new_section is None:
                 if self._section_title_present(old_section, new_corpus_key):
@@ -78,6 +109,23 @@ class SectionMatcher:
             )
 
         return matches
+
+    def _indexed_match(
+        self,
+        old_section: Section,
+        new_by_number: dict[str, Section],
+        new_by_title: dict[str, Section],
+        unmatched_new: dict[str, Section],
+    ) -> tuple[Section, float, str] | None:
+        if old_section.number:
+            candidate = new_by_number.get(old_section.number)
+            if candidate is not None and candidate.section_id in unmatched_new:
+                title_score = similarity(self._title_key(old_section), self._title_key(candidate))
+                return candidate, max(0.9, title_score), "section number match"
+        candidate = new_by_title.get(self._title_key(old_section))
+        if candidate is not None and candidate.section_id in unmatched_new:
+            return candidate, 0.86, "normalized title match"
+        return None
 
     def _best_match(self, old_section: Section, candidates: list[Section]) -> tuple[Section | None, float, str]:
         for candidate in candidates:

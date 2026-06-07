@@ -36,16 +36,29 @@ class ComparisonPipeline:
     def with_llm_config(cls, llm_config: LLMConfig) -> "ComparisonPipeline":
         return cls(summarizer=ChangeSummarizer(LLMClient(llm_config)))
 
-    def run(self, pdf_v1: str | Path, pdf_v2: str | Path, output_dir: str | Path) -> ComparisonJobResult:
+    def run(
+        self,
+        pdf_v1: str | Path,
+        pdf_v2: str | Path,
+        output_dir: str | Path,
+        progress: "Callable[[str], None] | None" = None,
+    ) -> ComparisonJobResult:
+        def notify(message: str) -> None:
+            if progress is not None:
+                progress(message)
+
         out = ensure_dir(Path(output_dir))
         old_doc_dir = ensure_dir(out / "v1")
         new_doc_dir = ensure_dir(out / "v2")
 
         old_path = Path(pdf_v1)
         new_path = Path(pdf_v2)
+        notify("Extracting V1...")
         old_extraction = self.extractor.extract(old_path, old_doc_dir)
+        notify("Extracting V2...")
         new_extraction = self.extractor.extract(new_path, new_doc_dir)
 
+        notify("Structuring sections...")
         old_document = self.normalizer.normalize(
             document_id=slugify(old_path.stem, "document_v1"),
             source_pdf=old_path.name,
@@ -59,9 +72,13 @@ class ComparisonPipeline:
             output_dir=new_doc_dir,
         )
 
+        notify("Matching sections...")
         matches = self.matcher.match(old_document, new_document)
+        notify("Comparing changed sections...")
         diff_items = self.diff_engine.diff(old_document, new_document, matches)
+        notify("Summarizing changes...")
         summarized = self.summarizer.summarize(diff_items)
+        notify("Writing report...")
         revision_entries = self.report_builder.build(summarized, matches, out)
 
         return ComparisonJobResult(

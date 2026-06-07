@@ -18,6 +18,9 @@ from .models import DiffItem, Document, Section, SectionMatch
 from .text_utils import canonical_key, first_words
 
 CONTEXT_WORDS = 5  # words of surrounding context shown around each change
+# Above this many words, diff line-by-line first (cheap) and only word-diff the
+# changed lines. Keeps very long sections from a costly whole-section word diff.
+TWO_LEVEL_WORD_LIMIT = 8000
 
 
 class DiffEngine:
@@ -45,13 +48,54 @@ class DiffEngine:
     def _section_changes(self, old_section: Section, new_section: Section) -> list[DiffItem]:
         old_words, old_pages = _words_with_pages(old_section)
         new_words, new_pages = _words_with_pages(new_section)
-        matcher = SequenceMatcher(None, old_words, new_words, autojunk=False)
-        changes: list[DiffItem] = []
-        counter = 0
 
+        if len(old_words) + len(new_words) <= TWO_LEVEL_WORD_LIMIT:
+            return self._word_changes(
+                old_section, new_section, old_words, old_pages, new_words, new_pages,
+                0, len(old_words), 0, len(new_words), start_counter=0,
+            )
+
+        # Very long section: diff lines first, then word-diff only changed lines.
+        old_lines = [str(entry[1]) for entry in old_section.page_map] or [old_section.normalized_text]
+        new_lines = [str(entry[1]) for entry in new_section.page_map] or [new_section.normalized_text]
+        old_offsets = _word_offsets(old_lines)
+        new_offsets = _word_offsets(new_lines)
+        matcher = SequenceMatcher(None, old_lines, new_lines, autojunk=False)
+        changes: list[DiffItem] = []
         for tag, i1, i2, j1, j2 in matcher.get_opcodes():
             if tag == "equal":
                 continue
+            sub = self._word_changes(
+                old_section, new_section, old_words, old_pages, new_words, new_pages,
+                old_offsets[i1], old_offsets[i2], new_offsets[j1], new_offsets[j2],
+                start_counter=len(changes),
+            )
+            changes.extend(sub)
+        return changes
+
+    def _word_changes(
+        self,
+        old_section: Section,
+        new_section: Section,
+        old_words: list[str],
+        old_pages: list[int],
+        new_words: list[str],
+        new_pages: list[int],
+        oa: int,
+        ob: int,
+        na: int,
+        nb: int,
+        start_counter: int,
+    ) -> list[DiffItem]:
+        """Word-level diff of a span ``old_words[oa:ob]`` vs ``new_words[na:nb]``."""
+        matcher = SequenceMatcher(None, old_words[oa:ob], new_words[na:nb], autojunk=False)
+        changes: list[DiffItem] = []
+        counter = start_counter
+
+        for tag, ri1, ri2, rj1, rj2 in matcher.get_opcodes():
+            if tag == "equal":
+                continue
+            i1, i2, j1, j2 = oa + ri1, oa + ri2, na + rj1, na + rj2
             old_part = " ".join(old_words[i1:i2])
             new_part = " ".join(new_words[j1:j2])
             # Ignore pure punctuation/spacing differences (e.g. "10. Read" vs "10.Read").
@@ -124,6 +168,14 @@ def _words_with_pages(section: Section) -> tuple[list[str], list[int]]:
         words = section.normalized_text.split()
         pages = [section.page_start] * len(words)
     return words, pages
+
+
+def _word_offsets(lines: list[str]) -> list[int]:
+    """Prefix word counts: offsets[k] = index of the first word of line k."""
+    offsets = [0]
+    for line in lines:
+        offsets.append(offsets[-1] + len(line.split()))
+    return offsets
 
 
 def _context(words: list[str], start: int, end: int) -> str:

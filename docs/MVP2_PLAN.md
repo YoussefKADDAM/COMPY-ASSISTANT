@@ -26,6 +26,22 @@ Physical page-windowing is kept only as a memory fallback (see Risks).
 The real work in MVP2 is therefore **performance and robustness at scale**, not a
 new architecture.
 
+## Progress
+
+Implemented so far (needs validation on large samples):
+- ✅ **Indexed O(n) matching** (item 1) — number/title via dict lookups; similarity
+  only for residuals.
+- ✅ **Two-level diff** (item 3) — long sections diff by line first, then word-diff
+  changed lines (guarded; normal sections keep the existing word-level path).
+- ✅ **Progress callbacks** (item 4, partial) — `pipeline.run(..., progress=cb)`;
+  the UI shows live stage status.
+- ✅ **Glued-word recovery** (item 6) — line text is rebuilt from per-character
+  positions (`rawdict`), inserting spaces where a positional gap has no space
+  glyph. Fixes the AN2V2 "Thehostinitialization" problem.
+
+Remaining: streamed/low-memory extraction + opt-in `pages.json` (item 2),
+process-pool parallelism (item 4), batched STGpt (item 5), KPI rollups (item 7).
+
 ## Work items
 
 ### 1. Indexed section matching (the main bottleneck) — `matcher.py`

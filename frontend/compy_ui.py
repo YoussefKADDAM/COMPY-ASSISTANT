@@ -12,17 +12,21 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 try:
-    from PySide6.QtCore import QThread, Signal
-    from PySide6.QtGui import QPixmap
+    from PySide6.QtCore import Qt, QThread, Signal
+    from PySide6.QtGui import QBrush, QColor, QFont, QPixmap
     from PySide6.QtWidgets import (
+        QAbstractItemView,
         QApplication,
         QFileDialog,
         QHBoxLayout,
+        QHeaderView,
         QLabel,
         QLineEdit,
         QMainWindow,
         QMessageBox,
         QPushButton,
+        QTableWidget,
+        QTableWidgetItem,
         QTabWidget,
         QTextEdit,
         QVBoxLayout,
@@ -50,9 +54,18 @@ def _ensure_project_root() -> None:
         sys.path.insert(0, str(PROJECT_ROOT))
 
 
+# Change type -> (label with emoji, light row background, strong text colour).
+TYPE_STYLE = {
+    "added": ("🟢 Added", "#e6f4ea", "#1a7f37"),
+    "deleted": ("🔴 Deleted", "#fde8e6", "#b42318"),
+    "changed": ("🟠 Changed", "#fdf0e3", "#b54708"),
+}
+
+
 class CompareWorker(QThread):
-    finished_ok = Signal(str, int, list)
+    finished_ok = Signal(str, list)
     failed = Signal(str)
+    progress = Signal(str)
 
     def __init__(self, pdf_v1: str, pdf_v2: str, output_dir: str) -> None:
         super().__init__()
@@ -66,15 +79,32 @@ class CompareWorker(QThread):
         from backend.compy.pipeline import ComparisonPipeline
 
         try:
-            result = ComparisonPipeline().run(self.pdf_v1, self.pdf_v2, self.output_dir)
+            result = ComparisonPipeline().run(
+                self.pdf_v1, self.pdf_v2, self.output_dir, progress=self.progress.emit
+            )
         except PdfExtractionError as exc:
             self.failed.emit(str(exc))
             return
         except Exception as exc:
             self.failed.emit(f"Comparison failed: {exc}")
             return
-        result_lines = [format_diff_item(item) for item in result.diff_items]
-        self.finished_ok.emit(result.output_dir, len(result.diff_items), result_lines)
+        records = [change_record(item) for item in result.diff_items]
+        self.finished_ok.emit(result.output_dir, records)
+
+
+def change_record(item: object) -> dict:
+    """Flatten a DiffItem into a row for the results table."""
+    return {
+        "type": str(getattr(item, "change_type", "")).lower(),
+        "number": str(getattr(item, "section_number", "")).strip(),
+        "section": _section_label(
+            str(getattr(item, "section_number", "")),
+            str(getattr(item, "section_title", "")),
+        ),
+        "page": str(getattr(item, "page_v2", "") or getattr(item, "page_v1", "")).strip(),
+        "old": " ".join(str(getattr(item, "old_snippet", "")).split()),
+        "new": " ".join(str(getattr(item, "new_snippet", "")).split()),
+    }
 
 
 def format_diff_item(item: object) -> str:
@@ -102,6 +132,15 @@ def format_diff_item(item: object) -> str:
             return f"Changed {where}: {old_detail} -> {new_detail}"
         return f"Changed {where}: {_shorten(summary)}"
     return f"{change_type.title() or 'Changed'} {where}: {_shorten(summary)}"
+
+
+def _record_line(record: dict) -> str:
+    where = f"section {record['section']}" + (f" (Page {record['page']})" if record["page"] else "")
+    if record["type"] == "added":
+        return f"Added in {where}: {_shorten(record['new'])}"
+    if record["type"] == "deleted":
+        return f"Deleted from {where}: {_shorten(record['old'])}"
+    return f"Changed {where}: {_shorten(record['old'])} -> {_shorten(record['new'])}"
 
 
 def _section_label(number: str, title: str) -> str:
@@ -132,6 +171,10 @@ class MainWindow(QMainWindow):
         self.log = QTextEdit()
         self.log.setReadOnly(True)
 
+        self.kpi_label = QLabel("")
+        self.kpi_label.setStyleSheet("font-size: 15px; font-weight: 600; padding: 6px 2px;")
+        self.table = self._build_table()
+
         root = QWidget()
         layout = QVBoxLayout(root)
         layout.addWidget(self._header())
@@ -144,10 +187,32 @@ class MainWindow(QMainWindow):
         layout.addWidget(compare_button)
         layout.addWidget(self.status)
 
+        changes_tab = QWidget()
+        changes_layout = QVBoxLayout(changes_tab)
+        changes_layout.addWidget(self.kpi_label)
+        changes_layout.addWidget(self.table)
+
         tabs = QTabWidget()
-        tabs.addTab(self.log, "Results")
+        tabs.addTab(changes_tab, "Changes")
+        tabs.addTab(self.log, "Log")
         layout.addWidget(tabs)
         self.setCentralWidget(root)
+
+    def _build_table(self) -> QTableWidget:
+        headers = ["Type", "Section #", "Section", "Page", "V1 (old)", "V2 (new)"]
+        table = QTableWidget(0, len(headers))
+        table.setHorizontalHeaderLabels(headers)
+        table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        table.setWordWrap(True)
+        table.verticalHeader().setVisible(False)
+        header = table.horizontalHeader()
+        for col in (0, 1, 3):
+            header.setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(2, QHeaderView.Interactive)
+        header.setSectionResizeMode(4, QHeaderView.Stretch)
+        header.setSectionResizeMode(5, QHeaderView.Stretch)
+        return table
 
     def _header(self) -> QWidget:
         widget = QWidget()
@@ -191,26 +256,72 @@ class MainWindow(QMainWindow):
             return
         self.status.setText("Comparing...")
         self.log.clear()
+        self.table.setRowCount(0)
+        self.kpi_label.setText("Comparing...")
         self.log.append("Starting comparison.")
         self.worker = CompareWorker(
             self.v1_input.text(), self.v2_input.text(), self.output_input.text()
         )
         self.worker.finished_ok.connect(self._finished)
         self.worker.failed.connect(self._failed)
+        self.worker.progress.connect(self.status.setText)
         self.worker.start()
 
-    def _finished(self, output_dir: str, change_count: int, result_lines: list) -> None:
+    def _finished(self, output_dir: str, records: list) -> None:
         self.status.setText("Complete")
-        self.log.append(f"Detected {change_count} changes.")
-        if result_lines:
+        self._populate_table(records)
+        self._populate_kpis(records)
+
+        self.log.append(f"Detected {len(records)} changes.")
+        if records:
             self.log.append("")
             self.log.append("Changes found:")
-            for line in result_lines:
-                self.log.append(f"- {line}")
+            for record in records:
+                self.log.append(f"- {_record_line(record)}")
         else:
             self.log.append("No section changes found.")
         self.log.append("")
         self.log.append(f"Artifacts: {output_dir}")
+
+    def _populate_kpis(self, records: list) -> None:
+        counts = {"added": 0, "deleted": 0, "changed": 0}
+        for record in records:
+            if record["type"] in counts:
+                counts[record["type"]] += 1
+        total = sum(counts.values())
+        self.kpi_label.setText(
+            f"Total: {total}    "
+            f"🟢 Added: {counts['added']}    "
+            f"🔴 Deleted: {counts['deleted']}    "
+            f"🟠 Changed: {counts['changed']}"
+        )
+
+    def _populate_table(self, records: list) -> None:
+        self.table.setRowCount(len(records))
+        for row, record in enumerate(records):
+            label, bg, fg = TYPE_STYLE.get(record["type"], (record["type"].title(), "#ffffff", "#1f2933"))
+            type_item = QTableWidgetItem(label)
+            type_item.setForeground(QBrush(QColor(fg)))
+            font = QFont()
+            font.setBold(True)
+            type_item.setFont(font)
+
+            cells = [
+                type_item,
+                QTableWidgetItem(record["number"] or "—"),
+                QTableWidgetItem(record["section"]),
+                QTableWidgetItem(f"Page {record['page']}" if record["page"] else ""),
+                QTableWidgetItem(record["old"]),
+                QTableWidgetItem(record["new"]),
+            ]
+            # Old text reads red, new text reads green for quick scanning.
+            cells[4].setForeground(QBrush(QColor("#b42318")))
+            cells[5].setForeground(QBrush(QColor("#1a7f37")))
+            for col, cell in enumerate(cells):
+                cell.setBackground(QBrush(QColor(bg)))
+                cell.setTextAlignment(Qt.AlignTop | Qt.AlignLeft)
+                self.table.setItem(row, col, cell)
+        self.table.resizeRowsToContents()
 
     def _failed(self, message: str) -> None:
         self.status.setText("Failed")

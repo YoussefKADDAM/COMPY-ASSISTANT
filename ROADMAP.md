@@ -20,9 +20,10 @@ Outputs: detailed comparison report (text), revision-history draft (text).
 compared yet — that is MVP3/MVP4.
 
 ## MVP2 — Text comparison (large PDFs)
-Scope: hundreds of pages. Handle large PDFs efficiently, optimize section
+Scope: hundreds to ~6000 pages. Handle large PDFs efficiently, optimize section
 detection/matching, chunk long sections, parallelize diffing, scale "skip
-unchanged".
+unchanged". **Decision: keep one document and stream it by *section* — do not
+split into smaller PDFs.** Full plan: [docs/MVP2_PLAN.md](docs/MVP2_PLAN.md).
 
 ## MVP3 — Table comparison
 Extract tables as structured data (rows/columns/cells), match tables between

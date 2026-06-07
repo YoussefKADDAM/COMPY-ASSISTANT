@@ -14,8 +14,11 @@ class SectionMatcher:
         old_sections = [section for section in old_document.sections if section.comparison_enabled]
         new_sections = [section for section in new_document.sections if section.comparison_enabled]
         unmatched_new = {section.section_id: section for section in new_sections}
-        old_corpus_key = canonical_key(" ".join(page.raw_text or page.normalized_text for page in old_document.pages))
-        new_corpus_key = canonical_key(" ".join(page.raw_text or page.normalized_text for page in new_document.pages))
+        # Corpus used only to check whether a section title appears anywhere in the
+        # other document. Built from section titles + text (titles are excluded from
+        # bodies, so we add full_title explicitly).
+        old_corpus_key = canonical_key(" ".join(f"{s.full_title} {s.normalized_text}" for s in old_document.sections))
+        new_corpus_key = canonical_key(" ".join(f"{s.full_title} {s.normalized_text}" for s in new_document.sections))
         matches: list[SectionMatch] = []
 
         # Fast path: resolve section-number and exact-title matches with O(1) index

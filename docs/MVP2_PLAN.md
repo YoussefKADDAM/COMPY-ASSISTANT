@@ -44,9 +44,23 @@ Implemented so far (needs validation on large samples):
   written with `--debug` / `compare(..., debug=True)`; other artifacts always write.
 - ✅ **KPI rollups** (item 7) — `kpi_by_chapter` + `kpi_by_chapter.json` + a
   "By chapter" table in the HTML report.
+- ✅ **Lower-memory extraction** (item 2) — per-page `raw_text` is no longer stored
+  (matching now uses section text); `ProseBlock.lines` are only kept when the
+  no-outline font fallback needs them; intermediate page data is freed during
+  pass 2.
+- ✅ **Process-pool parallelism** (item 4) — V1 and V2 are extracted in parallel
+  processes (`parallel.py`) for documents past a page-count threshold, with
+  **dual page progress** ("V1 page x/N | V2 page y/M") and an automatic fallback
+  to sequential if a process pool can't be used.
 
-Remaining: deeper streamed/low-memory extraction (drop per-page `raw_text`,
-page-window mode), process-pool parallelism (item 4), batched STGpt (item 5).
+Remaining: page-window streaming for the very largest files (sectioning is global,
+so this needs a chunk-aware redesign), and **batched STGpt** (item 5) — deferred
+until the LLM/revision-history phase after MVP2.
+
+Note on glued words: geometry repairs gluing when characters have a positional gap.
+Some source PDFs (e.g. AN2V2) pack characters with *zero* gap, which is
+unrecoverable without dictionary-based word splitting; the diff's canonical guard
+still prevents this from producing fake changes.
 
 ## Work items
 

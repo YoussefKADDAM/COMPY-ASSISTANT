@@ -36,6 +36,21 @@ class ComparisonPipeline:
     def with_llm_config(cls, llm_config: LLMConfig) -> "ComparisonPipeline":
         return cls(summarizer=ChangeSummarizer(LLMClient(llm_config)))
 
+    @staticmethod
+    def _should_parallelize(path_v1: Path, path_v2: Path, min_total_pages: int = 120) -> bool:
+        """Parallelize only when the combined page count makes the spawn cost worth it."""
+        try:
+            import fitz  # type: ignore
+
+            total = 0
+            for path in (path_v1, path_v2):
+                doc = fitz.open(str(path))
+                total += doc.page_count
+                doc.close()
+            return total >= min_total_pages
+        except Exception:
+            return False
+
     def run(
         self,
         pdf_v1: str | Path,
@@ -43,6 +58,7 @@ class ComparisonPipeline:
         output_dir: str | Path | None = None,
         progress: "Callable[[str], None] | None" = None,
         debug: bool = False,
+        parallel: bool = True,
     ) -> ComparisonJobResult:
         def notify(message: str) -> None:
             if progress is not None:
@@ -58,8 +74,25 @@ class ComparisonPipeline:
 
         old_path = Path(pdf_v1)
         new_path = Path(pdf_v2)
-        old_extraction = self.extractor.extract(old_path, old_doc_dir, progress, debug)
-        new_extraction = self.extractor.extract(new_path, new_doc_dir, progress, debug)
+
+        old_extraction = new_extraction = None
+        # Large documents: extract both versions in parallel processes (PyMuPDF is
+        # not thread-safe). Small documents skip it -- process spawn overhead would
+        # make them slower. Any failure falls back to sequential, so it never breaks.
+        if parallel and self._should_parallelize(old_path, new_path):
+            try:
+                from .parallel import extract_pair_parallel
+
+                jobs = [("V1", old_path, old_doc_dir, debug), ("V2", new_path, new_doc_dir, debug)]
+                results = extract_pair_parallel(jobs, progress)
+                old_extraction, new_extraction = results["V1"], results["V2"]
+            except Exception as exc:  # pragma: no cover - environment dependent
+                notify(f"Parallel extraction unavailable ({type(exc).__name__}); running sequentially")
+                old_extraction = new_extraction = None
+
+        if old_extraction is None or new_extraction is None:
+            old_extraction = self.extractor.extract(old_path, old_doc_dir, progress, debug)
+            new_extraction = self.extractor.extract(new_path, new_doc_dir, progress, debug)
 
         notify("Structuring sections...")
         old_document = self.normalizer.normalize(

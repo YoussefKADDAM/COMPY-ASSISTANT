@@ -98,6 +98,13 @@ class PdfExtractor:
         total = doc.page_count
         step = max(1, total // 50)  # throttle progress to ~50 updates
 
+        # Parse the outline first: when it is reliable we use the bookmark-driven
+        # section builder and never need per-line font data, so we can skip storing
+        # ProseBlock.lines (saves ~half the prose memory on bookmarked manuals).
+        outline = self._parse_outline(doc)
+        outline_ok = self._outline_is_reliable(outline)
+        keep_lines = not outline_ok
+
         # Pass 1: collect body-candidate blocks per page (geometry filtering only).
         page_infos = []
         for index, page in enumerate(doc):
@@ -120,7 +127,6 @@ class PdfExtractor:
                     "index": index,
                     "width": float(page.rect.width),
                     "height": float(page.rect.height),
-                    "raw_text": page.get_text("text") or "",
                     "table_rects": table_rects,
                     "figure_rects": figure_rects,
                     "candidates": candidates,
@@ -130,6 +136,7 @@ class PdfExtractor:
         body_size = self._dominant_body_size(page_infos)
 
         # Pass 2: drop sub-body orphan labels (figure legends), then assemble.
+        # We free each page's intermediate candidates as we go to cap peak memory.
         pages: List[PageArtifact] = []
         prose_blocks: List[ProseBlock] = []
         for info in page_infos:
@@ -150,7 +157,7 @@ class PdfExtractor:
                         x0=block["x0"],
                         text=" ".join(t for t, _ in kept),
                         max_size=max((s for _, s in kept), default=0.0),
-                        lines=[[t, s] for t, s in kept],
+                        lines=[[t, s] for t, s in kept] if keep_lines else [],
                     )
                 )
             prose_blocks.extend(page_blocks)
@@ -161,8 +168,10 @@ class PdfExtractor:
                 PageArtifact(
                     page_index=index,
                     displayed_page_number=str(index + 1),
-                    raw_text=info["raw_text"],
-                    normalized_text=normalize_text(info["raw_text"]),
+                    # raw_text is no longer stored per page (it duplicated the whole
+                    # document in memory); matching uses section text instead.
+                    raw_text="",
+                    normalized_text=normalize_text(prose_text),
                     prose_text=prose_text,
                     header_candidate=lines[0] if lines else "",
                     footer_candidate=lines[-1] if len(lines) > 1 else "",
@@ -173,9 +182,7 @@ class PdfExtractor:
                     figure_bboxes=[[r.x0, r.y0, r.x1, r.y1] for r in info["figure_rects"]],
                 )
             )
-
-        outline = self._parse_outline(doc)
-        outline_ok = self._outline_is_reliable(outline)
+            info["candidates"] = None  # free the intermediate now
         metadata = DocumentMetadata(
             document_code=str(pdf_meta.get("/Alternate_Name") or ""),
             title=str(pdf_meta.get("/Document_Title") or pdf_meta.get("title") or pdf_meta.get("/Title") or ""),

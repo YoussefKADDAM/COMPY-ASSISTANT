@@ -25,6 +25,7 @@ bookmarks). See [docs/MVP1_APPROACH.md](docs/MVP1_APPROACH.md).
 
 ## Docs
 
+- [Explication/](Explication/) — **plain-language** explanations of each MVP (start here)
 - [docs/CLASS_REFERENCE.md](docs/CLASS_REFERENCE.md) — class & function map
 - [ARCHITECTURE.md](ARCHITECTURE.md) — module responsibilities
 - [docs/INTEGRATION.md](docs/INTEGRATION.md) — embedding via `CompyEngine`

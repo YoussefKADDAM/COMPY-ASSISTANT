@@ -23,6 +23,13 @@ boxes, headers/footers by position, and the section structure comes from the
 PDF's own bookmark **outline** (with a font-size fallback when a PDF has no
 bookmarks). See [docs/MVP1_APPROACH.md](docs/MVP1_APPROACH.md).
 
+## Docs
+
+- [docs/CLASS_REFERENCE.md](docs/CLASS_REFERENCE.md) — class & function map
+- [ARCHITECTURE.md](ARCHITECTURE.md) — module responsibilities
+- [docs/INTEGRATION.md](docs/INTEGRATION.md) — embedding via `CompyEngine`
+- [ROADMAP.md](ROADMAP.md) · [docs/MVP1_APPROACH.md](docs/MVP1_APPROACH.md) · [docs/MVP2_PLAN.md](docs/MVP2_PLAN.md)
+
 ## Setup
 
 ```powershell

@@ -365,18 +365,20 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(tab)
 
         top = QHBoxLayout()
-        legend = QLabel(
-            '<b>Legend:</b> &nbsp;<span style="color:#1a7f37">■ Added</span>'
-            '&nbsp;&nbsp;<span style="color:#b42318">■ Deleted</span>'
-            '&nbsp;&nbsp;<span style="color:#b54708">■ Changed</span>'
-        )
-        legend.setTextFormat(Qt.RichText)
+        legend = QLabel("🟢 Added      🔴 Deleted      🟠 Changed")
+        legend.setStyleSheet("font-size: 14px; font-weight: 600; padding: 2px;")
+        self.fs_btn = QPushButton("⛶ Full screen")
+        self.restore_btn = QPushButton("Restore")
+        self.fs_btn.clicked.connect(self.showFullScreen)
+        self.restore_btn.clicked.connect(self.showNormal)
         self.prev_btn = QPushButton("◀ Prev")
         self.next_btn = QPushButton("Next ▶")
         self.prev_btn.clicked.connect(lambda: self._step_group(-1))
         self.next_btn.clicked.connect(lambda: self._step_group(1))
         top.addWidget(legend)
         top.addStretch(1)
+        top.addWidget(self.fs_btn)
+        top.addWidget(self.restore_btn)
         top.addWidget(self.prev_btn)
         top.addWidget(self.next_btn)
         outer.addLayout(top)

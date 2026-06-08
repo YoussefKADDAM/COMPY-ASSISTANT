@@ -60,7 +60,7 @@ def build_visual_diff(old_pdf: str | Path, new_pdf: str | Path, diff_items: List
         if item.change_type in ("deleted", "changed") and item.old_change.strip():
             page = _to_int(item.page_v1)
             kind = "deleted" if item.change_type == "deleted" else "changed"
-            rects = _locate(old_doc, page, item.old_change, old_cache)
+            rects = _locate(old_doc, page, item.old_prefix, item.old_change, item.old_suffix, old_cache)
             group.v1_highlights.extend(Highlight(bbox=r, kind=kind) for r in rects)
             if rects and not group.v1_page:
                 group.v1_page = page
@@ -68,7 +68,7 @@ def build_visual_diff(old_pdf: str | Path, new_pdf: str | Path, diff_items: List
         if item.change_type in ("added", "changed") and item.new_change.strip():
             page = _to_int(item.page_v2)
             kind = "added" if item.change_type == "added" else "changed"
-            rects = _locate(new_doc, page, item.new_change, new_cache)
+            rects = _locate(new_doc, page, item.new_prefix, item.new_change, item.new_suffix, new_cache)
             group.v2_highlights.extend(Highlight(bbox=r, kind=kind) for r in rects)
             if rects and not group.v2_page:
                 group.v2_page = page
@@ -104,52 +104,77 @@ def render_page(pdf_path: str | Path, page_index: int, highlights: List[Highligh
 
 
 # -- helpers -----------------------------------------------------------------
-def _locate(doc, page_1based: int, text: str, cache: Dict[int, list]) -> List[List[float]]:
-    """Per-word boxes for ``text`` on the given (1-based) page; [] if not found."""
+def _locate(
+    doc,
+    page_1based: int,
+    prefix: str,
+    change: str,
+    suffix: str,
+    cache: Dict[int, tuple],
+) -> List[List[float]]:
+    """Word boxes for the *changed* text on a page, anchored by its context.
+
+    We match against the page's concatenated, letters-only text (ignoring spaces
+    and punctuation). Including the surrounding ``prefix``/``suffix`` makes the
+    match land on the right occurrence (e.g. the body sentence, not the same
+    token inside a register table). For long spans we fall back to progressively
+    shorter leads so big deletions still highlight.
+    """
     if not (1 <= page_1based <= doc.page_count):
         return []
-    target = canonical_key(text)
-    if not target:
+    core = canonical_key(change)
+    if not core:
         return []
+
     index = page_1based - 1
-    words = cache.get(index)
-    if words is None:
+    data = cache.get(index)
+    if data is None:
         try:
             words = doc[index].get_text("words")  # (x0,y0,x1,y1,word,block,line,wno)
         except Exception:
             words = []
-        cache[index] = words
+        keys = [canonical_key(w[4]) for w in words]
+        owner: List[int] = []
+        for word_index, key in enumerate(keys):
+            owner.extend([word_index] * len(key))
+        data = (words, owner, "".join(keys))
+        cache[index] = data
+    words, owner, page_str = data
+    if not page_str:
+        return []
 
-    keys = [canonical_key(w[4]) for w in words]
-    run = _find_run(keys, target)
-    if run is not None:
-        start, end = run
-        return [[float(words[k][0]), float(words[k][1]), float(words[k][2]), float(words[k][3])]
-                for k in range(start, end + 1) if keys[k]]
+    pre = canonical_key(prefix)
+    post = canonical_key(suffix)
 
-    # Fallback: PyMuPDF's own search (works when the text matches the PDF verbatim).
-    try:
-        for rect in doc[index].search_for(text[:120]):
-            return [[rect.x0, rect.y0, rect.x1, rect.y1]]
-    except Exception:
-        pass
+    # 1) Context-anchored exact match (disambiguates table vs body).
+    for target, core_offset in ((pre + core + post, len(pre)), (pre + core, len(pre)),
+                                (core + post, 0), (core, 0)):
+        pos = page_str.find(target)
+        if pos != -1:
+            return _boxes(words, owner, pos + core_offset, pos + core_offset + len(core))
+
+    # 2) Long / cross-page change: highlight as much of the lead as we can find.
+    change_keys = [k for k in (canonical_key(t) for t in change.split()) if k]
+    for take in (len(change_keys) * 3 // 4, len(change_keys) // 2, 12, 6, 3):
+        if take <= 0:
+            continue
+        lead = "".join(change_keys[:take])
+        if not lead:
+            continue
+        for target, off in ((pre + lead, len(pre)), (lead, 0)):
+            pos = page_str.find(target)
+            if pos != -1:
+                return _boxes(words, owner, pos + off, pos + off + len(lead))
     return []
 
 
-def _find_run(keys: List[str], target: str) -> Optional[tuple]:
-    """Smallest run of consecutive words whose joined letters equal `target`."""
-    n = len(keys)
-    for start in range(n):
-        if not keys[start]:
-            continue
-        acc = ""
-        for end in range(start, min(n, start + _MAX_RUN_WORDS)):
-            acc += keys[end]
-            if acc == target:
-                return start, end
-            if len(acc) >= len(target):
-                break
-    return None
+def _boxes(words: list, owner: List[int], char_start: int, char_end: int) -> List[List[float]]:
+    """Boxes of the words covering the character span [char_start, char_end)."""
+    char_start = max(0, char_start)
+    char_end = min(len(owner), char_end)
+    indices = sorted({owner[i] for i in range(char_start, char_end)})
+    return [[float(words[k][0]), float(words[k][1]), float(words[k][2]), float(words[k][3])]
+            for k in indices]
 
 
 def _highlight_parts(highlight) -> tuple:

@@ -12,6 +12,11 @@ left and new on the right, with the changed text **highlighted in color**.
 - A **navigator** on the left lists every changed section, with a **Major/Minor** badge
   so you know which changes matter most.
 - **Prev / Next** buttons (and clicking a navigator item) jump you straight to each change.
+- **⛶ Full screen / Restore** buttons give the two pages the whole screen when you need it.
+
+The highlight is **context-aware**: if the same word appears both in a register table and
+in the body text, COMPY highlights the one in the body (where the real change is), by
+matching the words *around* the change, not just the word itself.
 
 So the experience is: *"Here are only the pages that changed, and here is exactly what
 changed on them."*

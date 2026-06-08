@@ -165,6 +165,37 @@ class ComparisonJobResult:
         return self.diff_items
 
 
+@dataclass
+class Highlight:
+    """A colored box to draw on a rendered page. bbox = [x0, y0, x1, y1] in points."""
+
+    bbox: List[float]
+    kind: str  # "added" | "deleted" | "changed"
+
+
+@dataclass
+class VisualGroup:
+    """One changed section, paired across versions for the side-by-side view."""
+
+    section_number: str
+    section_title: str
+    severity: str
+    v1_page: int  # 1-based page in the old PDF (0 = none)
+    v2_page: int  # 1-based page in the new PDF (0 = none)
+    change_count: int = 0
+    v1_highlights: List[Highlight] = field(default_factory=list)
+    v2_highlights: List[Highlight] = field(default_factory=list)
+
+
+@dataclass
+class VisualDiff:
+    """The whole visual model: changed sections + the two source PDF paths."""
+
+    v1_pdf: str
+    v2_pdf: str
+    groups: List[VisualGroup] = field(default_factory=list)
+
+
 def to_dict(value: Any) -> Any:
     """Convert dataclass graphs to JSON-friendly dictionaries."""
     return asdict(value)

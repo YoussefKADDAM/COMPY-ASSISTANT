@@ -29,9 +29,13 @@ try:
         QHeaderView,
         QLabel,
         QLineEdit,
+        QListWidget,
+        QListWidgetItem,
         QMainWindow,
         QMessageBox,
         QPushButton,
+        QScrollArea,
+        QSplitter,
         QStyle,
         QStyledItemDelegate,
         QStyleOptionViewItem,
@@ -80,7 +84,7 @@ TYPE_STYLE = {
 
 
 class CompareWorker(QThread):
-    finished_ok = Signal(str, list, dict)
+    finished_ok = Signal(str, list, dict, object)
     failed = Signal(str)
     progress = Signal(str)
 
@@ -120,7 +124,16 @@ class CompareWorker(QThread):
             "sections_compared": len(compared),
             "sections_changed": changed_sections,
         }
-        self.finished_ok.emit(result.output_dir, records, meta)
+
+        # Build the visual side-by-side model (changed pages + highlight boxes).
+        self.progress.emit("Building visual diff...")
+        try:
+            from backend.compy.visual_diff import build_visual_diff
+
+            visual = build_visual_diff(self.pdf_v1, self.pdf_v2, result.diff_items)
+        except Exception:
+            visual = None
+        self.finished_ok.emit(result.output_dir, records, meta, visual)
 
 
 def change_record(item: object) -> dict:
@@ -265,6 +278,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(860, 560)
         self.worker: CompareWorker | None = None
         self._preview: dict = {}  # tag -> (title, pages) for the PDF-info panel
+        self.visual = None  # VisualDiff model from the last run
+        self._render_cache: dict = {}  # (side, group_index) -> QPixmap
 
         self.v1_input = QLineEdit()
         self.v2_input = QLineEdit()
@@ -312,6 +327,7 @@ class MainWindow(QMainWindow):
 
         tabs = QTabWidget()
         tabs.addTab(changes_tab, "Changes")
+        tabs.addTab(self._build_visual_tab(), "Visual Diff")
         tabs.addTab(self.log, "Log")
         layout.addWidget(tabs)
         layout.addWidget(self.stats_panel)
@@ -343,6 +359,133 @@ class MainWindow(QMainWindow):
         header.setSectionResizeMode(4, QHeaderView.Stretch)
         header.setSectionResizeMode(5, QHeaderView.Stretch)
         return table
+
+    def _build_visual_tab(self) -> QWidget:
+        tab = QWidget()
+        outer = QVBoxLayout(tab)
+
+        top = QHBoxLayout()
+        legend = QLabel(
+            '<b>Legend:</b> &nbsp;<span style="color:#1a7f37">■ Added</span>'
+            '&nbsp;&nbsp;<span style="color:#b42318">■ Deleted</span>'
+            '&nbsp;&nbsp;<span style="color:#b54708">■ Changed</span>'
+        )
+        legend.setTextFormat(Qt.RichText)
+        self.prev_btn = QPushButton("◀ Prev")
+        self.next_btn = QPushButton("Next ▶")
+        self.prev_btn.clicked.connect(lambda: self._step_group(-1))
+        self.next_btn.clicked.connect(lambda: self._step_group(1))
+        top.addWidget(legend)
+        top.addStretch(1)
+        top.addWidget(self.prev_btn)
+        top.addWidget(self.next_btn)
+        outer.addLayout(top)
+
+        self.nav_list = QListWidget()
+        self.nav_list.setMinimumWidth(220)
+        self.nav_list.setMaximumWidth(300)
+        self.nav_list.currentRowChanged.connect(self._on_group_selected)
+
+        self.old_view = QLabel("")
+        self.new_view = QLabel("")
+        for view in (self.old_view, self.new_view):
+            view.setAlignment(Qt.AlignTop | Qt.AlignHCenter)
+        old_scroll = QScrollArea()
+        old_scroll.setWidget(self.old_view)
+        old_scroll.setWidgetResizable(False)
+        new_scroll = QScrollArea()
+        new_scroll.setWidget(self.new_view)
+        new_scroll.setWidgetResizable(False)
+
+        def titled(title: str, widget: QWidget) -> QWidget:
+            box = QWidget()
+            box_layout = QVBoxLayout(box)
+            box_layout.setContentsMargins(0, 0, 0, 0)
+            heading = QLabel(title)
+            heading.setStyleSheet("font-weight:600; padding:2px;")
+            box_layout.addWidget(heading)
+            box_layout.addWidget(widget)
+            return box
+
+        pages = QSplitter(Qt.Horizontal)
+        pages.addWidget(titled("V1 (old)", old_scroll))
+        pages.addWidget(titled("V2 (new)", new_scroll))
+        pages.setSizes([500, 500])
+
+        main = QSplitter(Qt.Horizontal)
+        main.addWidget(self.nav_list)
+        main.addWidget(pages)
+        main.setSizes([240, 900])
+        outer.addWidget(main, 1)
+
+        self.visual_empty = QLabel("Run a comparison to see changed pages side by side.")
+        self.visual_empty.setStyleSheet("color:#667; padding:6px;")
+        outer.addWidget(self.visual_empty)
+        return tab
+
+    def _set_visual(self, visual) -> None:
+        self.visual = visual
+        self._render_cache.clear()
+        self.nav_list.clear()
+        self.old_view.clear()
+        self.new_view.clear()
+        groups = getattr(visual, "groups", None) if visual is not None else None
+        if not groups:
+            self.visual_empty.setText("No changed pages to show.")
+            self.visual_empty.show()
+            return
+        self.visual_empty.hide()
+        for group in groups:
+            sec = group.section_number or "—"
+            badge = "\U0001F534 Major" if group.severity == "major" else "▪ Minor"
+            item = QListWidgetItem(
+                f"{badge}\nSec {sec}  ·  p{group.v1_page or '-'}→{group.v2_page or '-'}"
+                f"  ·  {group.change_count} change(s)"
+            )
+            self.nav_list.addItem(item)
+        self.nav_list.setCurrentRow(0)  # triggers the first render
+
+    def _step_group(self, delta: int) -> None:
+        if self.nav_list.count() == 0:
+            return
+        row = max(0, min(self.nav_list.count() - 1, self.nav_list.currentRow() + delta))
+        self.nav_list.setCurrentRow(row)
+
+    def _on_group_selected(self, row: int) -> None:
+        groups = getattr(self.visual, "groups", None)
+        if not groups or row < 0 or row >= len(groups):
+            return
+        group = groups[row]
+        self._render_side("old", row, group)
+        self._render_side("new", row, group)
+
+    def _render_side(self, side: str, row: int, group) -> None:
+        label = self.old_view if side == "old" else self.new_view
+        cache_key = (side, row)
+        pixmap = self._render_cache.get(cache_key)
+        if pixmap is None:
+            pdf = self.visual.v1_pdf if side == "old" else self.visual.v2_pdf
+            page = group.v1_page if side == "old" else group.v2_page
+            highlights = group.v1_highlights if side == "old" else group.v2_highlights
+            if not page:
+                label.setPixmap(QPixmap())
+                label.setText("(no matching page)")
+                label.adjustSize()
+                return
+            try:
+                from backend.compy.visual_diff import render_page
+
+                png = render_page(pdf, page - 1, highlights)
+                pixmap = QPixmap()
+                pixmap.loadFromData(png)
+                self._render_cache[cache_key] = pixmap
+            except Exception as exc:  # pragma: no cover - defensive
+                label.setText(f"(could not render page: {exc})")
+                label.adjustSize()
+                return
+        label.setText("")
+        label.setPixmap(pixmap)
+        label.adjustSize()
 
     def _header(self) -> QWidget:
         widget = QWidget()
@@ -400,12 +543,13 @@ class MainWindow(QMainWindow):
         self.worker.progress.connect(self.status.setText)
         self.worker.start()
 
-    def _finished(self, output_dir: str, records: list, meta: dict) -> None:
+    def _finished(self, output_dir: str, records: list, meta: dict, visual=None) -> None:
         self.status.setText("Complete")
         self._populate_table(records)
         self._populate_kpis(records)
         self._set_pdf_info(meta)
         self._set_stats(meta)
+        self._set_visual(visual)
 
         self.log.append(f"Detected {len(records)} changes.")
         if records:

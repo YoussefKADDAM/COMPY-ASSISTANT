@@ -139,6 +139,7 @@ class DiffEngine:
                     page_v1=str(page_v1),
                     page_v2=str(page_v2),
                     deterministic_summary=self._summary(change_type),
+                    severity=classify_severity(change_type, old_change, new_change),
                     old_snippet=_join_tokens([old_prefix, old_change, old_suffix]),
                     new_snippet=_join_tokens([new_prefix, new_change, new_suffix]),
                     old_prefix=old_prefix,
@@ -172,11 +173,25 @@ class DiffEngine:
             page_v1=str(section.page_start) if change_type == "deleted" else "",
             page_v2=str(section.page_start) if change_type == "added" else "",
             deterministic_summary=f"Section {change_type}.",
+            severity="major",  # a whole section appearing/disappearing is always major
             old_snippet=snippet if change_type == "deleted" else "",
             new_snippet=snippet if change_type == "added" else "",
             old_change=snippet if change_type == "deleted" else "",
             new_change=snippet if change_type == "added" else "",
         )
+
+
+def classify_severity(change_type: str, old_change: str, new_change: str) -> str:
+    """Rough importance of a change: 'major' or 'minor'.
+
+    Major when a value/number changed, or a sizable phrase (>= 6 words) was
+    added/removed/reworded. Small wording tweaks are minor.
+    """
+    text = f"{old_change} {new_change}"
+    if any(ch.isdigit() for ch in text):
+        return "major"
+    words = max(len(old_change.split()), len(new_change.split()))
+    return "major" if words >= 6 else "minor"
 
 
 def _tokenize(text: str) -> list[str]:

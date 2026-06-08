@@ -139,6 +139,16 @@ Provider-neutral chat-completion wrapper (OpenAI / STGpt).
 - `summarize(diff_items)` — fill each item's `ai_summary` (LLM or deterministic
   fallback). `_fallback_summary(item)` builds the offline wording.
 
+## 7b. Visual diff — `visual_diff.py`
+
+Turns `DiffItem`s + the two PDFs into the side-by-side model and renders pages.
+- `build_visual_diff(old_pdf, new_pdf, diff_items)` → `VisualDiff` (changed sections
+  grouped, each with the highlight boxes on the old/new page).
+- `render_page(pdf_path, page_index, highlights, dpi=110)` → PNG bytes with the
+  green/red/orange boxes baked in.
+- `classify_severity(...)` lives in `diff_engine.py` and fills `DiffItem.severity`.
+- Models: `Highlight`, `VisualGroup`, `VisualDiff` (in `models.py`).
+
 ## 8. Reporting — `reporting.py`
 
 ### `class ReportBuilder`

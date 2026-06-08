@@ -27,14 +27,27 @@ HIGHLIGHT_COLORS = {
 _MAX_RUN_WORDS = 60  # safety cap when scanning page words for a match
 
 
-def build_visual_diff(old_pdf: str | Path, new_pdf: str | Path, diff_items: List[DiffItem]) -> VisualDiff:
-    """Group changes by section and locate their highlight boxes on each page."""
+def build_visual_diff(
+    old_pdf: str | Path,
+    new_pdf: str | Path,
+    diff_items: List[DiffItem],
+    old_regions: "Optional[Dict[int, list]]" = None,
+    new_regions: "Optional[Dict[int, list]]" = None,
+) -> VisualDiff:
+    """Group changes by section and locate their highlight boxes on each page.
+
+    ``old_regions`` / ``new_regions`` map a 0-based page index to a list of
+    table/figure bounding boxes; any page word inside one is ignored when
+    searching, so a highlight can never land on text inside a register table.
+    """
     import fitz  # type: ignore
 
     old_doc = fitz.open(str(old_pdf))
     new_doc = fitz.open(str(new_pdf))
-    old_cache: Dict[int, list] = {}
-    new_cache: Dict[int, list] = {}
+    old_regions = old_regions or {}
+    new_regions = new_regions or {}
+    old_cache: Dict[int, tuple] = {}
+    new_cache: Dict[int, tuple] = {}
 
     groups: Dict[str, VisualGroup] = {}
     order: List[str] = []
@@ -60,7 +73,8 @@ def build_visual_diff(old_pdf: str | Path, new_pdf: str | Path, diff_items: List
         if item.change_type in ("deleted", "changed") and item.old_change.strip():
             page = _to_int(item.page_v1)
             kind = "deleted" if item.change_type == "deleted" else "changed"
-            rects = _locate(old_doc, page, item.old_prefix, item.old_change, item.old_suffix, old_cache)
+            rects = _locate(old_doc, page, item.old_prefix, item.old_change, item.old_suffix,
+                            old_cache, old_regions.get(page - 1, []))
             group.v1_highlights.extend(Highlight(bbox=r, kind=kind) for r in rects)
             if rects and not group.v1_page:
                 group.v1_page = page
@@ -68,7 +82,8 @@ def build_visual_diff(old_pdf: str | Path, new_pdf: str | Path, diff_items: List
         if item.change_type in ("added", "changed") and item.new_change.strip():
             page = _to_int(item.page_v2)
             kind = "added" if item.change_type == "added" else "changed"
-            rects = _locate(new_doc, page, item.new_prefix, item.new_change, item.new_suffix, new_cache)
+            rects = _locate(new_doc, page, item.new_prefix, item.new_change, item.new_suffix,
+                            new_cache, new_regions.get(page - 1, []))
             group.v2_highlights.extend(Highlight(bbox=r, kind=kind) for r in rects)
             if rects and not group.v2_page:
                 group.v2_page = page
@@ -111,14 +126,15 @@ def _locate(
     change: str,
     suffix: str,
     cache: Dict[int, tuple],
+    regions: "Optional[list]" = None,
 ) -> List[List[float]]:
     """Word boxes for the *changed* text on a page, anchored by its context.
 
     We match against the page's concatenated, letters-only text (ignoring spaces
-    and punctuation). Including the surrounding ``prefix``/``suffix`` makes the
-    match land on the right occurrence (e.g. the body sentence, not the same
-    token inside a register table). For long spans we fall back to progressively
-    shorter leads so big deletions still highlight.
+    and punctuation). Words inside ``regions`` (table/figure boxes) are dropped
+    first, so a highlight can never land on a table cell; the surrounding
+    ``prefix``/``suffix`` then pins the right body occurrence. For long spans we
+    fall back to progressively shorter leads so big deletions still highlight.
     """
     if not (1 <= page_1based <= doc.page_count):
         return []
@@ -133,6 +149,8 @@ def _locate(
             words = doc[index].get_text("words")  # (x0,y0,x1,y1,word,block,line,wno)
         except Exception:
             words = []
+        if regions:
+            words = [w for w in words if not _inside_any(w, regions)]
         keys = [canonical_key(w[4]) for w in words]
         owner: List[int] = []
         for word_index, key in enumerate(keys):
@@ -166,6 +184,16 @@ def _locate(
             if pos != -1:
                 return _boxes(words, owner, pos + off, pos + off + len(lead))
     return []
+
+
+def _inside_any(word, regions: list) -> bool:
+    """True if the word's center falls inside any table/figure box."""
+    cx = (float(word[0]) + float(word[2])) / 2
+    cy = (float(word[1]) + float(word[3])) / 2
+    for r in regions:
+        if r[0] <= cx <= r[2] and r[1] <= cy <= r[3]:
+            return True
+    return False
 
 
 def _boxes(words: list, owner: List[int], char_start: int, char_end: int) -> List[List[float]]:

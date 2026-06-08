@@ -18,7 +18,9 @@ try:
         QBrush,
         QColor,
         QFont,
+        QKeySequence,
         QPixmap,
+        QShortcut,
         QTextDocument,
     )
     from PySide6.QtWidgets import (
@@ -130,7 +132,16 @@ class CompareWorker(QThread):
         try:
             from backend.compy.visual_diff import build_visual_diff
 
-            visual = build_visual_diff(self.pdf_v1, self.pdf_v2, result.diff_items)
+            def regions(document):
+                return {
+                    page.page_index: [list(b) for b in (page.table_bboxes + page.figure_bboxes)]
+                    for page in document.pages
+                }
+
+            visual = build_visual_diff(
+                self.pdf_v1, self.pdf_v2, result.diff_items,
+                regions(result.old_document), regions(result.new_document),
+            )
         except Exception:
             visual = None
         self.finished_ok.emit(result.output_dir, records, meta, visual)
@@ -280,6 +291,8 @@ class MainWindow(QMainWindow):
         self._preview: dict = {}  # tag -> (title, pages) for the PDF-info panel
         self.visual = None  # VisualDiff model from the last run
         self._render_cache: dict = {}  # (side, group_index) -> QPixmap
+        self._fs_window = None  # full-screen host for the Visual Diff panel
+        self._kpi_counts = {"added": 0, "deleted": 0, "changed": 0}
 
         self.v1_input = QLineEdit()
         self.v2_input = QLineEdit()
@@ -361,21 +374,28 @@ class MainWindow(QMainWindow):
         return table
 
     def _build_visual_tab(self) -> QWidget:
-        tab = QWidget()
-        outer = QVBoxLayout(tab)
+        self._visual_tab = QWidget()
+        tab_layout = QVBoxLayout(self._visual_tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Everything lives in a single container so it can be reparented into a
+        # full-screen window (panel-only full screen, not the whole app).
+        content = QWidget()
+        self.visual_content = content
+        outer = QVBoxLayout(content)
 
         top = QHBoxLayout()
-        legend = QLabel("🟢 Added      🔴 Deleted      🟠 Changed")
-        legend.setStyleSheet("font-size: 14px; font-weight: 600; padding: 2px;")
+        self.visual_legend = QLabel("🟢 Added: 0      🔴 Deleted: 0      🟠 Changed: 0")
+        self.visual_legend.setStyleSheet("font-size: 14px; font-weight: 600; padding: 2px;")
         self.fs_btn = QPushButton("⛶ Full screen")
         self.restore_btn = QPushButton("Restore")
-        self.fs_btn.clicked.connect(self.showFullScreen)
-        self.restore_btn.clicked.connect(self.showNormal)
+        self.fs_btn.clicked.connect(self._enter_fullscreen)
+        self.restore_btn.clicked.connect(self._exit_fullscreen)
         self.prev_btn = QPushButton("◀ Prev")
         self.next_btn = QPushButton("Next ▶")
         self.prev_btn.clicked.connect(lambda: self._step_group(-1))
         self.next_btn.clicked.connect(lambda: self._step_group(1))
-        top.addWidget(legend)
+        top.addWidget(self.visual_legend)
         top.addStretch(1)
         top.addWidget(self.fs_btn)
         top.addWidget(self.restore_btn)
@@ -423,11 +443,38 @@ class MainWindow(QMainWindow):
         self.visual_empty = QLabel("Run a comparison to see changed pages side by side.")
         self.visual_empty.setStyleSheet("color:#667; padding:6px;")
         outer.addWidget(self.visual_empty)
-        return tab
+
+        tab_layout.addWidget(content)
+        return self._visual_tab
+
+    def _enter_fullscreen(self) -> None:
+        if self._fs_window is not None:
+            return
+        host = QWidget()
+        host.setWindowTitle("COMPY — Visual Diff")
+        host_layout = QVBoxLayout(host)
+        host_layout.setContentsMargins(0, 0, 0, 0)
+        host_layout.addWidget(self.visual_content)  # reparents the panel here
+        QShortcut(QKeySequence(Qt.Key_Escape), host, activated=self._exit_fullscreen)
+        host.showFullScreen()
+        self._fs_window = host
+
+    def _exit_fullscreen(self) -> None:
+        if self._fs_window is None:
+            return
+        self._visual_tab.layout().addWidget(self.visual_content)  # reparent back
+        self._fs_window.close()
+        self._fs_window = None
 
     def _set_visual(self, visual) -> None:
         self.visual = visual
         self._render_cache.clear()
+        counts = self._kpi_counts
+        self.visual_legend.setText(
+            f"🟢 Added: {counts.get('added', 0)}      "
+            f"🔴 Deleted: {counts.get('deleted', 0)}      "
+            f"🟠 Changed: {counts.get('changed', 0)}"
+        )
         self.nav_list.clear()
         self.old_view.clear()
         self.new_view.clear()
@@ -569,6 +616,7 @@ class MainWindow(QMainWindow):
         for record in records:
             if record["type"] in counts:
                 counts[record["type"]] += 1
+        self._kpi_counts = counts
         total = sum(counts.values())
         self.kpi_label.setText(
             f"Total: {total}    "
